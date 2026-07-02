@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DeviceHistoryRequest(BaseModel):
@@ -21,10 +21,11 @@ class DeviceHistoryRequest(BaseModel):
         examples=[["867564050638581", "DEVICE123"]],
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {"device_ids": ["867564050638581", "DEVICE123", "GPS001"]}
         }
+    )
 
 
 class CommunicationResponse(BaseModel):
@@ -51,9 +52,9 @@ class CommunicationResponse(BaseModel):
     fix_status: str | None = None
     alert_type: str | None = None
 
-    class Config:
-        from_attributes = True  # Para SQLAlchemy models
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,  # Para SQLAlchemy models
+        json_schema_extra={
             "example": {
                 "id": 1,
                 "device_id": "867564050638581",
@@ -71,7 +72,8 @@ class CommunicationResponse(BaseModel):
                 "fix_status": "VALID",
                 "alert_type": None,
             }
-        }
+        },
+    )
 
 
 class CommunicationFullResponse(BaseModel):
@@ -143,9 +145,9 @@ class CommunicationFullResponse(BaseModel):
     # Campo de alertas heredado de versiones anteriores
     alert_type: str | None = None
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "id": 1,
                 "uuid": "550e8400-e29b-41d4-a716-446655440000",
@@ -188,7 +190,8 @@ class CommunicationFullResponse(BaseModel):
                 "raw_message": None,
                 "alert_type": None,
             }
-        }
+        },
+    )
 
 
 class CommunicationLatestResponse(BaseModel):
@@ -219,9 +222,9 @@ class CommunicationLatestResponse(BaseModel):
     received_epoch: int | None = None
     received_at: datetime | None = None
 
-    class Config:
-        from_attributes = True  # Para SQLAlchemy models
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,  # Para SQLAlchemy models
+        json_schema_extra={
             "example": {
                 "device_id": "867564050638581",
                 "latitude": 19.4326,
@@ -243,4 +246,5 @@ class CommunicationLatestResponse(BaseModel):
                 "received_epoch": 1705318201,
                 "received_at": "2024-01-15T10:30:01",
             }
-        }
+        },
+    )

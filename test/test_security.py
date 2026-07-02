@@ -60,7 +60,7 @@ class TestJWTToken:
         exp_datetime = datetime.fromtimestamp(payload["exp"], tz=UTC).replace(
             tzinfo=None
         )
-        expected_exp = datetime.utcnow() + timedelta(
+        expected_exp = datetime.now(UTC).replace(tzinfo=None) + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
 
@@ -120,7 +120,7 @@ class TestJWTToken:
         Test: Token firmado con algoritmo diferente falla.
         """
         data = {"sub": "test_user"}
-        expire = datetime.utcnow() + timedelta(minutes=30)
+        expire = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=30)
         data.update({"exp": expire})
 
         # Firmar con algoritmo diferente

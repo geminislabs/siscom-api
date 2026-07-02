@@ -6,7 +6,7 @@ Este módulo contiene fixtures reutilizables para tests.
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -253,7 +253,9 @@ def expired_token() -> str:
     Crea un JWT token expirado para tests.
     """
     data = {"sub": "test_user", "user_id": 1}
-    expire = datetime.utcnow() - timedelta(minutes=10)  # Expirado hace 10 minutos
+    expire = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        minutes=10
+    )  # Expirado hace 10 minutos
     data.update({"exp": expire})
 
     from jose import jwt

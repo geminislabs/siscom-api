@@ -5,7 +5,7 @@ Schemas Pydantic para el módulo de eventos.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class EventResponse(BaseModel):
@@ -28,9 +28,9 @@ class EventResponse(BaseModel):
     received_at: datetime | None = None
     source_epoch: int | None = None
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "unit_id": "123e4567-e89b-12d3-a456-426614174000",
                 "source_id": "DEVICE123",
@@ -39,7 +39,8 @@ class EventResponse(BaseModel):
                 "received_at": "2026-03-15T10:30:50Z",
                 "source_epoch": 1710499845,
             }
-        }
+        },
+    )
 
 
 class EventsPageResponse(BaseModel):
@@ -54,8 +55,8 @@ class EventsPageResponse(BaseModel):
     data: list[EventResponse]
     next_cursor: str | None = None
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "data": [
                     {
@@ -69,4 +70,5 @@ class EventsPageResponse(BaseModel):
                 ],
                 "next_cursor": "eyJvYSI6ICIyMDI2LTAzLTE0VDEwOjMwOjQ1WiIsICJpZCI6ICJhZWIxYzcyZC1lOWQyLTRlOGYtOGMxZi0wOGU0ZmVjYTc4ZWYifQ==",
             }
-        }
+        },
+    )

@@ -4,9 +4,11 @@ Modelos SQLAlchemy para la tabla de eventos.
 
 from sqlalchemy import BIGINT, UUID, Column, DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    pass
 
 
 class EventType(Base):
