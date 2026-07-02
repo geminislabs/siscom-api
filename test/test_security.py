@@ -57,7 +57,9 @@ class TestJWTToken:
         assert "exp" in payload
 
         # Verificar que la expiración es aproximadamente correcta
-        exp_datetime = datetime.fromtimestamp(payload["exp"], tz=timezone.utc).replace(tzinfo=None)
+        exp_datetime = datetime.fromtimestamp(payload["exp"], tz=timezone.utc).replace(
+            tzinfo=None
+        )
         expected_exp = datetime.utcnow() + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
