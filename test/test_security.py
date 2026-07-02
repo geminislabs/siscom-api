@@ -2,7 +2,7 @@
 Tests para el módulo de seguridad y autenticación JWT.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -57,7 +57,7 @@ class TestJWTToken:
         assert "exp" in payload
 
         # Verificar que la expiración es aproximadamente correcta
-        exp_datetime = datetime.fromtimestamp(payload["exp"])
+        exp_datetime = datetime.fromtimestamp(payload["exp"], tz=timezone.utc).replace(tzinfo=None)
         expected_exp = datetime.utcnow() + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )

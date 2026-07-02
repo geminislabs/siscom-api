@@ -301,7 +301,7 @@ class TestCommunicationsResponseSchema:
             speed=None,
         )
         db_session.add(comm)
-        await db_session.commit()
+        db_session.commit()
 
         response = client.get(
             "/api/v1/communications?device_ids=NULL_TEST", headers=auth_headers

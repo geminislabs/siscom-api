@@ -31,6 +31,7 @@ aio-statsd
 
 # --- Pruebas y cliente HTTP ---
 pytest
+pytest-asyncio
 httpx
 
 # --- Tipos opcionales y dev helpers ---

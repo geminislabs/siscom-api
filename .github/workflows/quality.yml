@@ -1,0 +1,57 @@
+name: Quality Checks
+
+on:
+  push:
+    branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
+
+jobs:
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check code formatting (Black)
+        run: |
+          black --check app/ test/
+
+      - name: Lint code (Ruff)
+        run: |
+          ruff check app/ test/
+
+      - name: Run tests with coverage
+        run: |
+          pytest test/ --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=40
+        env:
+          # Test env vars (adjust as needed for siscom-api)
+          DATABASE_URL: "postgresql://test:test@localhost:5432/test_db"
+          JWT_SECRET_KEY: "test-secret-key-for-ci"
+          JWT_ALGORITHM: "HS256"
+          KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
+          PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+        continue-on-error: true

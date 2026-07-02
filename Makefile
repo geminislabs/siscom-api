@@ -33,6 +33,9 @@ type-check: ## Verificar tipos con MyPy
 check-all: lint format-check type-check ## Ejecutar todos los checks
 	@echo "✅ Todos los checks completados!"
 
+validate: format-check lint test-cov ## Validación completa (CI-like)
+	@echo "✅ Validación completa exitosa!"
+
 fix-all: lint-fix format ## Auto-corregir y formatear
 	@echo "✅ Código corregido y formateado!"
 
