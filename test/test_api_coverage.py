@@ -25,8 +25,18 @@ class TestMainAppCoverage:
         """Test: App tiene routes configuradas."""
         from app.main import app
 
-        routes = [route.path for route in app.routes]
-        assert "/api/health" in routes or any("/health" in r for r in routes)
+        def collect_paths(routes, prefix: str = "") -> list[str]:
+            paths: list[str] = []
+            for route in routes:
+                if hasattr(route, "routes"):
+                    nested_prefix = prefix + (getattr(route, "path", "") or "")
+                    paths.extend(collect_paths(route.routes, nested_prefix))
+                elif hasattr(route, "path"):
+                    paths.append(prefix + route.path)
+            return paths
+
+        paths = collect_paths(app.routes)
+        assert any("/health" in path for path in paths)
 
     def test_openapi_url_is_set(self, client: TestClient):
         """Test: OpenAPI URL está configurada."""
