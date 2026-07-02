@@ -12,19 +12,19 @@ install-dev: ## Instalar dependencias de desarrollo
 
 lint: ## Ejecutar Ruff (linter)
 	@echo "🔍 Ejecutando Ruff..."
-	ruff check app/
+	ruff check app/ test/
 
 lint-fix: ## Ejecutar Ruff y auto-corregir
 	@echo "🔧 Auto-corrigiendo con Ruff..."
-	ruff check app/ --fix
+	ruff check app/ test/ --fix
 
 format: ## Formatear código con Black
 	@echo "🎨 Formateando código con Black..."
-	black app/
+	black app/ test/
 
 format-check: ## Verificar formato sin modificar
 	@echo "🎨 Verificando formato..."
-	black --check app/
+	black --check app/ test/
 
 type-check: ## Verificar tipos con MyPy
 	@echo "📝 Verificando tipos con MyPy..."
