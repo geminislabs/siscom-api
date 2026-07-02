@@ -167,8 +167,8 @@ mypy app/ --strict
 ruff check app/ && black --check app/ && mypy app/ --ignore-missing-imports
 
 # Opción 2: Usando Makefile (recomendado)
-make check-all      # Verificar todo
-make fix-all        # Auto-corregir y formatear
+make all-checks     # Verificar todo (formato, lint, tests)
+make validate       # Pipeline local equivalente a CI
 ```
 
 #### 📦 Comandos útiles con Makefile
@@ -182,9 +182,9 @@ make format         # Formatear con Black
 make format-check   # Verificar formato
 make type-check     # Verificar tipos con MyPy
 make test           # Ejecutar tests
-make dev            # Ejecutar servidor en desarrollo
-make docker-build   # Construir imagen Docker
-make docker-up      # Levantar con Docker Compose
+make run-dev        # Ejecutar servidor en desarrollo (puerto 8000)
+make build          # Construir imagen Docker
+make run            # Levantar con Docker Compose
 ```
 
 #### 💡 Configuración en tu editor

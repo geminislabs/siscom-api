@@ -57,6 +57,9 @@ jobs:
       - name: Run tests with coverage
         run: |
           pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=65 -q
+
+      - name: Build Docker image
+        run: docker build -t siscom-api:ci .
         env:
           STATSD_ENABLED: "false"
           # Database config (individual vars for Settings)
