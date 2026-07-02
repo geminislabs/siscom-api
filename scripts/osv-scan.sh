@@ -44,5 +44,10 @@ if [[ ! -x "$BIN" ]]; then
 	install_osv_scanner
 fi
 
-# Scan pinned deps only (not .venv / site-packages). Config: osv-scanner.toml
-exec "$BIN" scan "$ROOT/requirements.txt"
+CONFIG_ARGS=()
+if [[ -f "$ROOT/osv-scanner.toml" ]]; then
+	CONFIG_ARGS=(--config="$ROOT/osv-scanner.toml")
+fi
+
+# requirements.txt has unpinned deps; --no-resolve avoids deps.dev resolution failures.
+exec "$BIN" scan source -L "$ROOT/requirements.txt" "${CONFIG_ARGS[@]}" --no-resolve
