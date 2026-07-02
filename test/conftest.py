@@ -4,21 +4,16 @@ Configuración de fixtures de pytest para SISCOM API.
 Este módulo contiene fixtures reutilizables para tests.
 """
 
-import asyncio
-
-# ============================================================================
-# Configuración de Base de Datos de Test
-# ============================================================================
-# URL de base de datos de test (usa credenciales fijas de test)
-# Construimos la URL directamente para tests en lugar de depender de settings
 import os
 from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
@@ -27,22 +22,21 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token
 from app.main import app
-
-# Importar TODOS los modelos para registrar sus tablas
 from app.models.communications import Base, CommunicationQueclink, CommunicationSuntech
+from app.services.kafka_client import kafka_client
+from app.utils.metrics import metrics_client
 
 TEST_DB_HOST = os.getenv("DB_HOST", "localhost")
 TEST_DB_PORT = os.getenv("DB_PORT", "5432")
-TEST_DB_USER = "test"
-TEST_DB_PASSWORD = "test"
-TEST_DB_NAME = "siscom_test"
+TEST_DB_USER = os.getenv("DB_USERNAME", "test")
+TEST_DB_PASSWORD = os.getenv("DB_PASSWORD", "test")
+TEST_DB_NAME = os.getenv("DB_DATABASE", "siscom_test")
 
 TEST_DATABASE_URL = (
     f"postgresql+asyncpg://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
     f"@{TEST_DB_HOST}:{TEST_DB_PORT}/{TEST_DB_NAME}"
 )
 
-# Engine de test con NullPool para evitar problemas con múltiples tests
 test_engine = create_async_engine(
     TEST_DATABASE_URL,
     echo=False,
@@ -55,26 +49,13 @@ TestSessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-
-# ============================================================================
-# Configuración de Base de Datos SQLite (para tests nuevos)
-# ============================================================================
-# Los tests EXISTENTES usan PostgreSQL (arriba).
-# Los tests NUEVOS pueden usar SQLite en memoria para mayor rapidez.
-#
-# Uso:
-#   - Para tests con PostgreSQL: usa `db_session` fixture (existente)
-#   - Para tests con SQLite: usa `db_session_sqlite` fixture (nuevo)
-
-# SQLite en memoria con aiosqlite
 SQLITE_TEST_URL = "sqlite+aiosqlite:///:memory:"
 
-# Engine SQLite con configuración async y pool compartido
 sqlite_test_engine = create_async_engine(
     SQLITE_TEST_URL,
     echo=False,
     connect_args={"check_same_thread": False},
-    poolclass=StaticPool,  # ← Importante: StaticPool para compartir conexión en memoria
+    poolclass=StaticPool,
 )
 
 SqliteTestSessionLocal = sessionmaker(
@@ -84,125 +65,60 @@ SqliteTestSessionLocal = sessionmaker(
 )
 
 
-# ============================================================================
-# Fixtures de Event Loop
-# ============================================================================
+@pytest.fixture(autouse=True)
+def disable_external_services(monkeypatch):
+    """Evita que Kafka/StatsD bloqueen o relenticen los tests."""
+    monkeypatch.setattr(kafka_client, "connect", lambda: None)
+    monkeypatch.setattr(kafka_client, "disconnect", lambda: None)
+
+    async def noop_async(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(metrics_client, "ensure_connected", noop_async)
+    monkeypatch.setattr(metrics_client, "close", noop_async)
+    monkeypatch.setattr(metrics_client, "kafka_circuit_breaker_gauge", noop_async)
+    monkeypatch.setattr("app.api.routes.stream.start_kafka_broker_bridge", lambda: None)
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """
-    Crea un event loop para toda la sesión de tests.
-    """
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-# ============================================================================
-# Fixtures de Base de Datos
-# ============================================================================
-
-
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture
 async def setup_test_database():
-    """
-    Crea las tablas de test al inicio de la sesión de tests
-    y las elimina al final.
-    """
-    # Crear todas las tablas
+    """Crea tablas de test si no existen."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
     yield
 
-    # Eliminar todas las tablas
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_communications_tables(setup_test_database):
+    """Limpia tablas antes de cada test para aislar datos."""
+    async with TestSessionLocal() as session:
+        await session.execute(
+            text(
+                "TRUNCATE TABLE communications_suntech, communications_queclink "
+                "RESTART IDENTITY CASCADE"
+            )
+        )
+        await session.commit()
+    yield
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db_session(setup_test_database) -> AsyncGenerator[AsyncSession, None]:
-    """
-    Crea una sesión de base de datos para cada test.
-    La sesión se hace rollback al final del test.
-
-    NOTA: Usa PostgreSQL real. Para tests nuevos, considera usar
-    `db_session_sqlite` para mayor rapidez.
-    """
+    """Sesión PostgreSQL para seed de datos en fixtures."""
     async with TestSessionLocal() as session:
         yield session
         await session.rollback()
 
 
 @pytest.fixture
-async def db_session_sqlite() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Crea una sesión de base de datos SQLite en memoria para cada test.
-
-    USO RECOMENDADO PARA TESTS NUEVOS:
-    - Más rápido que PostgreSQL
-    - No requiere DB externa
-    - Ideal para tests unitarios
-
-    Ejemplo:
-        @pytest.mark.asyncio
-        async def test_my_feature(db_session_sqlite: AsyncSession):
-            # Tu test aquí
-    """
-    # Crear tablas en esta sesión
-    async with sqlite_test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    # Crear sesión
-    async with SqliteTestSessionLocal() as session:
-        yield session
-        await session.rollback()
-
-    # Limpiar tablas
-    async with sqlite_test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest.fixture
-def override_get_db(db_session: AsyncSession):
-    """
-    Override de la dependencia get_db para usar la BD de test PostgreSQL.
-    """
+def client() -> Generator:
+    """Cliente TestClient; cada request usa su propia sesión async."""
 
     async def _get_db_override():
-        yield db_session
+        async with TestSessionLocal() as session:
+            yield session
 
-    return _get_db_override
-
-
-@pytest.fixture
-def override_get_db_sqlite(db_session_sqlite: AsyncSession):
-    """
-    Override de la dependencia get_db para usar SQLite en memoria.
-
-    Para tests nuevos que no requieren PostgreSQL.
-    """
-
-    async def _get_db_override():
-        yield db_session_sqlite
-
-    return _get_db_override
-
-
-# ============================================================================
-# Fixtures de Cliente HTTP
-# ============================================================================
-
-
-@pytest.fixture
-def client(override_get_db) -> Generator:
-    """
-    Cliente de test síncrono con TestClient usando PostgreSQL.
-
-    Para tests existentes.
-    """
-    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_db] = _get_db_override
 
     with TestClient(app) as test_client:
         yield test_client
@@ -211,17 +127,42 @@ def client(override_get_db) -> Generator:
 
 
 @pytest.fixture
+def override_get_db(db_session: AsyncSession):
+    """Override legacy para tests que inyectan db_session explícitamente."""
+
+    async def _get_db_override():
+        yield db_session
+
+    return _get_db_override
+
+
+@pytest_asyncio.fixture
+async def db_session_sqlite() -> AsyncGenerator[AsyncSession, None]:
+    """Sesión SQLite en memoria para tests nuevos."""
+    async with sqlite_test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with SqliteTestSessionLocal() as session:
+        yield session
+        await session.rollback()
+
+    async with sqlite_test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture
+def override_get_db_sqlite(db_session_sqlite: AsyncSession):
+    """Override de get_db con SQLite en memoria."""
+
+    async def _get_db_override():
+        yield db_session_sqlite
+
+    return _get_db_override
+
+
+@pytest.fixture
 def client_sqlite(override_get_db_sqlite) -> Generator:
-    """
-    Cliente de test síncrono con TestClient usando SQLite en memoria.
-
-    USO RECOMENDADO PARA TESTS NUEVOS.
-
-    Ejemplo:
-        def test_my_endpoint(client_sqlite: TestClient):
-            response = client_sqlite.get("/api/v1/health")
-            assert response.status_code == 200
-    """
+    """Cliente TestClient con SQLite."""
     app.dependency_overrides[get_db] = override_get_db_sqlite
 
     with TestClient(app) as test_client:
@@ -232,9 +173,7 @@ def client_sqlite(override_get_db_sqlite) -> Generator:
 
 @pytest.fixture
 async def async_client(override_get_db) -> AsyncGenerator:
-    """
-    Cliente de test asíncrono con httpx.AsyncClient.
-    """
+    """Cliente httpx async."""
     app.dependency_overrides[get_db] = override_get_db
 
     async with AsyncClient(app=app, base_url="http://test") as ac:
@@ -243,28 +182,17 @@ async def async_client(override_get_db) -> AsyncGenerator:
     app.dependency_overrides.clear()
 
 
-# ============================================================================
-# Fixtures de Autenticación
-# ============================================================================
-
-
 @pytest.fixture
 def valid_token() -> str:
-    """
-    Crea un JWT token válido para tests.
-    """
+    """JWT válido para tests."""
     return create_access_token({"sub": "test_user", "user_id": 1})
 
 
 @pytest.fixture
 def expired_token() -> str:
-    """
-    Crea un JWT token expirado para tests.
-    """
+    """JWT expirado para tests."""
     data = {"sub": "test_user", "user_id": 1}
-    expire = datetime.now(UTC).replace(tzinfo=None) - timedelta(
-        minutes=10
-    )  # Expirado hace 10 minutos
+    expire = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=10)
     data.update({"exp": expire})
 
     from jose import jwt
@@ -274,30 +202,19 @@ def expired_token() -> str:
 
 @pytest.fixture
 def invalid_token() -> str:
-    """
-    Token JWT inválido (mal firmado).
-    """
+    """JWT inválido para tests."""
     return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
 
 
 @pytest.fixture
 def auth_headers(valid_token: str) -> dict:
-    """
-    Headers con token de autenticación válido.
-    """
+    """Headers con Bearer token."""
     return {"Authorization": f"Bearer {valid_token}"}
 
 
-# ============================================================================
-# Fixtures de Datos de Test
-# ============================================================================
-
-
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sample_suntech_communication(db_session: AsyncSession):
-    """
-    Crea un registro de comunicación Suntech de prueba.
-    """
+    """Comunicación Suntech de prueba."""
     comm = CommunicationSuntech(
         device_id="867564050638581",
         latitude=Decimal("19.4326"),
@@ -323,11 +240,9 @@ async def sample_suntech_communication(db_session: AsyncSession):
     return comm
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def sample_queclink_communication(db_session: AsyncSession):
-    """
-    Crea un registro de comunicación Queclink de prueba.
-    """
+    """Comunicación Queclink de prueba."""
     comm = CommunicationQueclink(
         device_id="QUECLINK123",
         latitude=Decimal("25.6866"),
@@ -353,14 +268,11 @@ async def sample_queclink_communication(db_session: AsyncSession):
     return comm
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def multiple_communications(db_session: AsyncSession):
-    """
-    Crea múltiples registros de comunicaciones para tests.
-    """
+    """Varias comunicaciones de prueba."""
     communications = []
 
-    # 3 registros Suntech
     for i in range(3):
         comm = CommunicationSuntech(
             device_id=f"SUNTECH{i}",
@@ -376,7 +288,6 @@ async def multiple_communications(db_session: AsyncSession):
         db_session.add(comm)
         communications.append(comm)
 
-    # 2 registros Queclink
     for i in range(2):
         comm = CommunicationQueclink(
             device_id=f"QUECLINK{i}",
@@ -400,22 +311,13 @@ async def multiple_communications(db_session: AsyncSession):
     return communications
 
 
-# ============================================================================
-# Fixtures de Utilidad
-# ============================================================================
-
-
 @pytest.fixture
 def mock_device_ids() -> list[str]:
-    """
-    Lista de device IDs de prueba.
-    """
+    """Device IDs de prueba."""
     return ["867564050638581", "QUECLINK123", "SUNTECH0"]
 
 
 @pytest.fixture
 def sse_headers() -> dict:
-    """
-    Headers para peticiones Server-Sent Events.
-    """
+    """Headers para SSE."""
     return {"Accept": "text/event-stream"}

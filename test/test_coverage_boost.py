@@ -243,8 +243,7 @@ class TestModelsCoverage:
         assert hasattr(Event, "id")
         assert hasattr(Event, "unit_id")
         assert hasattr(Event, "source_id")
-        # Event tiene code, no event_type_code
-        assert hasattr(Event, "code")
+        assert hasattr(Event, "event_type_id")
         assert Event.__tablename__ == "events"
 
 

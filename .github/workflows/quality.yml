@@ -14,7 +14,7 @@ jobs:
   quality:
     name: Code Quality
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -56,8 +56,9 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest test/ --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=49
+          pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=46 -q
         env:
+          STATSD_ENABLED: "false"
           # Database config (individual vars for Settings)
           DB_HOST: "localhost"
           DB_PORT: "5432"

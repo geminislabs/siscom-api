@@ -46,15 +46,13 @@ class TestHealthEndpointExtended:
 
     def test_health_endpoint_accessible(self, client: TestClient):
         """Test: Health endpoint es accesible."""
-        response = client.get("/api/health")
-        # 200 o 404 dependiendo de si está configurado
-        assert response.status_code in [200, 404]
+        response = client.get("/health")
+        assert response.status_code == 200
 
     def test_health_returns_json_if_exists(self, client: TestClient):
-        """Test: Si health existe, retorna JSON."""
-        response = client.get("/api/health")
-        if response.status_code == 200:
-            assert "application/json" in response.headers.get("content-type", "")
+        """Test: Health retorna JSON."""
+        response = client.get("/health")
+        assert "application/json" in response.headers.get("content-type", "")
 
 
 class TestCommunicationsEndpointBasic:
