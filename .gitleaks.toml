@@ -11,9 +11,12 @@ paths = [
 	'''(?:^|/)htmlcov/''',
 	'''(?:^|/)docs/''',
 	'''(?:^|/)README\.md$''',
+	'''(?:^|/)CONFIG_GUIDE\.md$''',
 	'''(?:^|/)scripts/testing/''',
 	'''(?:^|/)\.env(?:\..*)?$''',
-	'''(?:^|/)\.github/workflows/''',
+	'''(?:^|/)\.github/''',
+	'''(?:^|/)test/''',
+	'''(?:^|/)testsprite_tests/''',
 ]
 regexes = [
 	'''example\.com''',
@@ -23,4 +26,6 @@ regexes = [
 	'''test_key''',
 	'''test-secret-key''',
 	'''test-paseto-key''',
+	'''invalid_signature''',
+	'''BEGIN RSA PRIVATE KEY''',
 ]
