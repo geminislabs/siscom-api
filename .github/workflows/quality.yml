@@ -39,13 +39,19 @@ jobs:
         run: |
           pytest test/ --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=40
         env:
-          # Test env vars
-          DATABASE_URL: "postgresql://test:test@localhost:5432/test_db"
+          # Database config (individual vars for Settings)
+          DB_HOST: "localhost"
+          DB_PORT: "5432"
+          DB_USERNAME: "test"
+          DB_PASSWORD: "test"
+          DB_DATABASE: "siscom_test"
+          # Auth & Security
           JWT_SECRET_KEY: "test-secret-key-for-ci-minimum-32-chars-long"
           JWT_ALGORITHM: "HS256"
-          KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
           PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
           PASETO_SECRET_KEY: "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI="
+          # Kafka
+          KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
