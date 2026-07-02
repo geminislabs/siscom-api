@@ -18,13 +18,13 @@ class TestSQLiteExample:
     async def test_create_communication_sqlite(self, db_session_sqlite: AsyncSession):
         """
         Ejemplo: Test con acceso directo a la base de datos SQLite.
-        
+
         ✅ Usa db_session_sqlite para tests nuevos
         ✅ Más rápido que PostgreSQL
         ✅ No requiere DB externa
         """
-        from decimal import Decimal
         from datetime import datetime
+        from decimal import Decimal
 
         # Crear registro
         comm = CommunicationSuntech(
@@ -45,30 +45,28 @@ class TestSQLiteExample:
         assert comm.device_id == "TEST_DEVICE_001"
         assert comm.latitude == Decimal("19.4326")
 
-    def test_config_endpoint_sqlite(self, client_sqlite: TestClient):
+    def test_simple_example(self, client_sqlite: TestClient):
         """
-        Ejemplo: Test de endpoint de configuración.
-        
-        Nota: No todos los endpoints están disponibles, ajusta según tu API.
-        """
-        # El endpoint /health podría no exist
+        Ejemplo: Test simple con cliente SQLite.
 
-ir o requerir configuración específica
-        # Para tests reales, usa endpoints que existan en tu API
-        pass
+        ✅ Usa client_sqlite para tests de endpoints
+        """
+        # Ejemplo básico - ajusta según tu API
+        assert client_sqlite is not None
 
 
 # ============================================================================
 # Comparación: PostgreSQL vs SQLite
 # ============================================================================
-# 
+#
 # Para referencia, así se verían los mismos tests con PostgreSQL:
 #
+# @pytest.mark.asyncio
 # async def test_create_communication_postgres(db_session: AsyncSession):
 #     # Mismo código pero usa PostgreSQL real
 #     pass
 #
-# def test_health_endpoint_postgres(client: TestClient):
+# def test_simple_example_postgres(client: TestClient):
 #     # Mismo código pero usa PostgreSQL real
 #     pass
 #

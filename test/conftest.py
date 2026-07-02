@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -23,7 +23,6 @@ from app.main import app
 
 # Importar TODOS los modelos para registrar sus tablas
 from app.models.communications import Base, CommunicationQueclink, CommunicationSuntech
-from app.models.events import Base as EventsBase  # noqa: F811
 
 # ============================================================================
 # Configuración de Base de Datos de Test
@@ -62,8 +61,6 @@ TestSessionLocal = sessionmaker(
 SQLITE_TEST_URL = "sqlite+aiosqlite:///:memory:"
 
 # Engine SQLite con configuración async y pool compartido
-from sqlalchemy.pool import StaticPool
-
 sqlite_test_engine = create_async_engine(
     SQLITE_TEST_URL,
     echo=False,
@@ -120,7 +117,7 @@ async def db_session(setup_test_database) -> AsyncGenerator[AsyncSession, None]:
     """
     Crea una sesión de base de datos para cada test.
     La sesión se hace rollback al final del test.
-    
+
     NOTA: Usa PostgreSQL real. Para tests nuevos, considera usar
     `db_session_sqlite` para mayor rapidez.
     """
@@ -133,12 +130,12 @@ async def db_session(setup_test_database) -> AsyncGenerator[AsyncSession, None]:
 async def db_session_sqlite() -> AsyncGenerator[AsyncSession, None]:
     """
     Crea una sesión de base de datos SQLite en memoria para cada test.
-    
+
     USO RECOMENDADO PARA TESTS NUEVOS:
     - Más rápido que PostgreSQL
     - No requiere DB externa
     - Ideal para tests unitarios
-    
+
     Ejemplo:
         @pytest.mark.asyncio
         async def test_my_feature(db_session_sqlite: AsyncSession):
@@ -147,12 +144,12 @@ async def db_session_sqlite() -> AsyncGenerator[AsyncSession, None]:
     # Crear tablas en esta sesión
     async with sqlite_test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     # Crear sesión
     async with SqliteTestSessionLocal() as session:
         yield session
         await session.rollback()
-    
+
     # Limpiar tablas
     async with sqlite_test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
@@ -174,7 +171,7 @@ def override_get_db(db_session: AsyncSession):
 def override_get_db_sqlite(db_session_sqlite: AsyncSession):
     """
     Override de la dependencia get_db para usar SQLite en memoria.
-    
+
     Para tests nuevos que no requieren PostgreSQL.
     """
 
@@ -193,7 +190,7 @@ def override_get_db_sqlite(db_session_sqlite: AsyncSession):
 def client(override_get_db) -> Generator:
     """
     Cliente de test síncrono con TestClient usando PostgreSQL.
-    
+
     Para tests existentes.
     """
     app.dependency_overrides[get_db] = override_get_db
@@ -208,9 +205,9 @@ def client(override_get_db) -> Generator:
 def client_sqlite(override_get_db_sqlite) -> Generator:
     """
     Cliente de test síncrono con TestClient usando SQLite en memoria.
-    
+
     USO RECOMENDADO PARA TESTS NUEVOS.
-    
+
     Ejemplo:
         def test_my_endpoint(client_sqlite: TestClient):
             response = client_sqlite.get("/api/v1/health")
