@@ -16,6 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    env:
+      STATSD_ENABLED: "false"
+      DB_HOST: "localhost"
+      DB_PORT: "5432"
+      DB_USERNAME: "test"
+      DB_PASSWORD: "test"
+      DB_DATABASE: "siscom_test"
+      JWT_SECRET_KEY: "test-secret-key-for-ci-minimum-32-chars-long"
+      JWT_ALGORITHM: "HS256"
+      PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
+      PASETO_SECRET_KEY: "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI="
+      KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
+
     services:
       postgres:
         image: postgres:16
@@ -57,18 +70,6 @@ jobs:
       - name: Run tests with coverage
         run: |
           pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=65 -q
-        env:
-          STATSD_ENABLED: "false"
-          DB_HOST: "localhost"
-          DB_PORT: "5432"
-          DB_USERNAME: "test"
-          DB_PASSWORD: "test"
-          DB_DATABASE: "siscom_test"
-          JWT_SECRET_KEY: "test-secret-key-for-ci-minimum-32-chars-long"
-          JWT_ALGORITHM: "HS256"
-          PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
-          PASETO_SECRET_KEY: "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI="
-          KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
 
       - name: Build Docker image
         run: docker build -t siscom-api:ci .

@@ -4,6 +4,15 @@ Configuración de fixtures de pytest para SISCOM API.
 Este módulo contiene fixtures reutilizables para tests.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from bootstrap_env import bootstrap_test_runtime
+
+bootstrap_test_runtime()
+
 import os
 from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime, timedelta
