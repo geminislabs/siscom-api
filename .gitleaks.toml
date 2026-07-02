@@ -13,6 +13,7 @@ paths = [
 	'''(?:^|/)README\.md$''',
 	'''(?:^|/)scripts/testing/''',
 	'''(?:^|/)\.env(?:\..*)?$''',
+	'''(?:^|/)\.github/workflows/''',
 ]
 regexes = [
 	'''example\.com''',

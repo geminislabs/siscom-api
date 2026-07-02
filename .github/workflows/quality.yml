@@ -56,7 +56,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest test/ --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=40
+          pytest test/ --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=49
         env:
           # Database config (individual vars for Settings)
           DB_HOST: "localhost"

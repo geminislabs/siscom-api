@@ -5,6 +5,13 @@ Este módulo contiene fixtures reutilizables para tests.
 """
 
 import asyncio
+
+# ============================================================================
+# Configuración de Base de Datos de Test
+# ============================================================================
+# URL de base de datos de test (usa credenciales fijas de test)
+# Construimos la URL directamente para tests en lugar de depender de settings
+import os
 from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -24,13 +31,15 @@ from app.main import app
 # Importar TODOS los modelos para registrar sus tablas
 from app.models.communications import Base, CommunicationQueclink, CommunicationSuntech
 
-# ============================================================================
-# Configuración de Base de Datos de Test
-# ============================================================================
+TEST_DB_HOST = os.getenv("DB_HOST", "localhost")
+TEST_DB_PORT = os.getenv("DB_PORT", "5432")
+TEST_DB_USER = "test"
+TEST_DB_PASSWORD = "test"
+TEST_DB_NAME = "siscom_test"
 
-# URL de base de datos de test (usa una BD separada o in-memory)
-TEST_DATABASE_URL = settings.DATABASE_URL.replace(
-    f"/{settings.DB_DATABASE}", "/siscom_test"
+TEST_DATABASE_URL = (
+    f"postgresql+asyncpg://{TEST_DB_USER}:{TEST_DB_PASSWORD}"
+    f"@{TEST_DB_HOST}:{TEST_DB_PORT}/{TEST_DB_NAME}"
 )
 
 # Engine de test con NullPool para evitar problemas con múltiples tests
