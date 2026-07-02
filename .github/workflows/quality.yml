@@ -45,7 +45,7 @@ jobs:
           JWT_ALGORITHM: "HS256"
           KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
           PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
-          PASETO_SECRET_KEY: "test-paseto-secret-key-32-bytes!!"
+          PASETO_SECRET_KEY: "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI="
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v4
