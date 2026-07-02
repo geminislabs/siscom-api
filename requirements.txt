@@ -10,7 +10,8 @@ pydantic-settings
 
 # --- Base de datos y ORM ---
 SQLAlchemy
-asyncpg
+asyncpg      # PostgreSQL async driver
+aiosqlite    # SQLite async driver (for in-memory tests)
 psycopg[binary]
 
 # --- Seguridad y autenticación JWT ---
