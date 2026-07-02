@@ -36,6 +36,15 @@ check-all: lint format-check type-check ## Ejecutar todos los checks
 validate: format-check lint test-cov ## Validación completa (CI-like)
 	@echo "✅ Validación completa exitosa!"
 
+scan-secrets: ## Escaneo Gitleaks
+	bash scripts/gitleaks-scan.sh
+
+audit-deps: ## Auditoría pip-audit
+	bash scripts/pip-audit-scan.sh
+
+scan-osv: ## Escaneo OSV-Scanner (requirements.txt)
+	bash scripts/osv-scan.sh
+
 fix-all: lint-fix format ## Auto-corregir y formatear
 	@echo "✅ Código corregido y formateado!"
 

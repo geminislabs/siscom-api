@@ -56,7 +56,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=46 -q
+          pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=65 -q
         env:
           STATSD_ENABLED: "false"
           # Database config (individual vars for Settings)
