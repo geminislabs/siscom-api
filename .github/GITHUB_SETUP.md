@@ -30,10 +30,9 @@ Ejemplo: api.tudominio.com
 ```
 Valor: Tu clave privada SSH completa (incluyendo BEGIN y END)
 Formato:
------BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA...
-... (todo el contenido de tu clave) ...
------END RSA PRIVATE KEY-----
+-----BEGIN [TIPO_DE_CLAVE] PRIVATE KEY-----
+<CONTENIDO_REAL_DE_TU_CLAVE_PRIVADA>
+-----END [TIPO_DE_CLAVE] PRIVATE KEY-----
 
 ⚠️ IMPORTANTE: Incluir TODO el contenido de la clave, con los headers
 ⚠️ No uses contraseña en la clave SSH (debe ser passwordless)

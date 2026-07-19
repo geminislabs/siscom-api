@@ -56,9 +56,7 @@ Esta guía cubre el despliegue de SISCOM API v1 (REST) en EC2 usando GitHub Acti
 # Secrets
 DB_PASSWORD=tu_password_seguro
 EC2_HOST=tu-servidor.ejemplo.com
-EC2_SSH_KEY=-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA...
------END RSA PRIVATE KEY-----
+EC2_SSH_KEY=-----BEGIN_[TIPO_DE_CLAVE]_PRIVATE_KEY-----\n<CONTENIDO_REAL_DE_TU_CLAVE_PRIVADA>\n-----END_[TIPO_DE_CLAVE]_PRIVATE_KEY-----
 EC2_SSH_PORT=22
 EC2_USERNAME=ubuntu
 JWT_SECRET_KEY=tu_jwt_secret_muy_seguro_y_largo

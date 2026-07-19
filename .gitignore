@@ -156,3 +156,4 @@ backup_*.sql
 alembic/versions/*.py
 !alembic/versions/__init__.py
 
+graphify-out/*
