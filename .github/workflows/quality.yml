@@ -5,6 +5,10 @@ on:
     branches: ["develop", "main"]
   pull_request:
     branches: ["develop", "main"]
+  schedule:
+    # Weekly re-check of temporarily ignored vulnerabilities.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -121,3 +125,24 @@ jobs:
 
       - name: OSV dependency scan
         run: bash scripts/osv-scan.sh
+
+  security-full-audit:
+    name: Security Full Audit (Weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Full dependency audit (no temporary ignores)
+        env:
+          FORCE_FULL_AUDIT: "1"
+        run: bash scripts/pip-audit-scan.sh
