@@ -1,0 +1,18 @@
+# Default reviewers — replace @geminislabs/engineering with your GitHub team slug
+* @geminislabs/engineering
+
+# Authentication and security
+/app/core/security.py @geminislabs/engineering
+/app/utils/paseto_validator.py @geminislabs/engineering
+
+# Public location-share API
+/app/api/routes/public.py @geminislabs/engineering
+
+# Messaging (Kafka)
+/app/services/kafka_client.py @geminislabs/engineering
+
+# CI/CD and release
+/.github/workflows/ @geminislabs/engineering
+/.github/dependabot.yml @geminislabs/engineering
+/scripts/ @geminislabs/engineering
+/Dockerfile @geminislabs/engineering

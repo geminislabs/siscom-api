@@ -53,6 +53,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+"test/conftest.py" = ["E402"]  # bootstrap env before app imports
+"test/**/*.py" = ["PLR2004", "ARG001", "ARG002", "PLC0415"]  # Allow magic values, unused fixtures, and local imports in tests
 
 [tool.mypy]
 python_version = "3.11"
@@ -74,7 +76,40 @@ testpaths = ["test"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=app --cov-report=term-missing --cov-report=html"
+addopts = "-v --cov=app --cov-report=term-missing --cov-report=html --cov-fail-under=65"
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow tests",
+    "auth: Authentication tests",
+    "database: Database tests",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "*/tests/*",
+    "*/test/*",
+    "*/__pycache__/*",
+    "*/.venv/*",
+    "*/venv/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
+    "@abc.abstractmethod",
+]
 
 
 [tool.dev-dependencies]

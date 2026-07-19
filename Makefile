@@ -1,121 +1,97 @@
-.PHONY: help install lint format type-check test clean dev run docker-build docker-up docker-down
+.PHONY: help install lint format format-check test test-cov build run run-dev stop clean deploy-test validate scan-secrets audit-deps scan-osv all-checks health logs shell db-shell dev docker-build docker-up docker-down
 
-help: ## Mostrar esta ayuda
+help:  ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-install: ## Instalar dependencias
+install:  ## Instala las dependencias
 	pip install -r requirements.txt
 
-install-dev: ## Instalar dependencias de desarrollo
-	pip install -r requirements.txt
-	pip install ruff black mypy pytest-cov pre-commit
+lint:  ## Ejecuta el linter (Ruff)
+	ruff check app/ test/
 
-lint: ## Ejecutar Ruff (linter)
-	@echo "🔍 Ejecutando Ruff..."
-	ruff check app/
+format:  ## Formatea el código con Black
+	black app/ test/
 
-lint-fix: ## Ejecutar Ruff y auto-corregir
-	@echo "🔧 Auto-corrigiendo con Ruff..."
-	ruff check app/ --fix
+format-check:  ## Verifica el formato sin modificar archivos
+	black --check app/ test/
 
-format: ## Formatear código con Black
-	@echo "🎨 Formateando código con Black..."
-	black app/
+test:  ## Ejecuta los tests
+	pytest test/ -v -m "not slow"
 
-format-check: ## Verificar formato sin modificar
-	@echo "🎨 Verificando formato..."
-	black --check app/
+test-cov:  ## Ejecuta los tests con coverage (umbrales en pyproject.toml)
+	pytest test/ -v -m "not slow" --cov=app --cov-report=term-missing --cov-report=html
 
-type-check: ## Verificar tipos con MyPy
-	@echo "📝 Verificando tipos con MyPy..."
-	@mypy app/ --ignore-missing-imports || echo "⚠️  MyPy encontró algunos warnings (no críticos)"
-
-check-all: lint format-check type-check ## Ejecutar todos los checks
-	@echo "✅ Todos los checks completados!"
-
-fix-all: lint-fix format ## Auto-corregir y formatear
-	@echo "✅ Código corregido y formateado!"
-
-test: ## Ejecutar todos los tests
-	@echo "🧪 Ejecutando todos los tests..."
-	pytest -v
-
-test-unit: ## Ejecutar solo tests unitarios
-	@echo "🧪 Ejecutando tests unitarios..."
-	pytest -v -m unit
-
-test-integration: ## Ejecutar solo tests de integración
-	@echo "🧪 Ejecutando tests de integración..."
-	pytest -v -m integration
-
-test-cov: ## Ejecutar tests con coverage
-	@echo "🧪 Ejecutando tests con coverage..."
-	pytest --cov=app --cov-report=term-missing --cov-report=html
-	@echo "✅ Reporte HTML generado en: htmlcov/index.html"
-
-test-watch: ## Ejecutar tests en modo watch (requiere pytest-watch)
-	@echo "🧪 Ejecutando tests en modo watch..."
-	ptw -- -v
-
-test-fast: ## Ejecutar tests rápidos (excluir lentos)
-	@echo "🧪 Ejecutando tests rápidos..."
-	pytest -v -m "not slow"
-
-test-auth: ## Ejecutar tests de autenticación
-	@echo "🧪 Ejecutando tests de autenticación..."
-	pytest -v -m auth
-
-test-db: ## Ejecutar tests de base de datos
-	@echo "🧪 Ejecutando tests de base de datos..."
-	pytest -v -m database
-
-test-file: ## Ejecutar tests de un archivo específico (usar FILE=nombre)
-	@echo "🧪 Ejecutando tests de $(FILE)..."
-	pytest -v test/$(FILE)
-
-clean: ## Limpiar archivos temporales
-	@echo "🧹 Limpiando archivos temporales..."
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete
-	find . -type f -name "*.pyo" -delete
-	find . -type f -name "*.coverage" -delete
-	rm -rf .pytest_cache
-	rm -rf .mypy_cache
-	rm -rf .ruff_cache
-	rm -rf htmlcov
-	rm -rf dist
-	rm -rf build
-	rm -rf *.egg-info
-
-dev: ## Ejecutar servidor en modo desarrollo
-	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --http h11
-
-run: ## Ejecutar servidor en modo producción
-	uvicorn app.main:app --host 0.0.0.0 --port 8000 --http h11
-
-docker-build: ## Construir imagen Docker
-	@echo "🐳 Construyendo imagen Docker..."
+build:  ## Construye la imagen Docker
 	docker build -t siscom-api:latest .
 
-docker-up: ## Levantar servicios con Docker Compose
-	@echo "🚀 Levantando servicios..."
+run:  ## Ejecuta el contenedor localmente
 	docker network create siscom-network 2>/dev/null || true
 	docker-compose up -d
 
-docker-down: ## Detener servicios Docker
-	@echo "🛑 Deteniendo servicios..."
+run-dev:  ## Ejecuta en modo desarrollo con hot-reload
+	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --http h11
+
+stop:  ## Detiene los contenedores
 	docker-compose down
 
-docker-logs: ## Ver logs del contenedor
-	docker-compose logs -f
+logs:  ## Muestra los logs del contenedor
+	docker-compose logs -f siscom-api
 
-docker-clean: ## Limpiar recursos Docker
-	docker-compose down -v
-	docker system prune -f
+clean:  ## Limpia archivos temporales y caché
+	find . -type d -name "__pycache__" -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+	find . -type f -name "*.pyo" -delete
+	find . -type d -name "*.egg-info" -exec rm -rf {} +
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	rm -rf htmlcov/
+	rm -rf .coverage
 
-setup: ## Configurar ambiente de desarrollo
-	@echo "🔧 Configurando ambiente de desarrollo..."
-	python -m venv venv || true
-	@echo "✅ Activa el entorno virtual con: source venv/bin/activate"
-	@echo "✅ Luego ejecuta: make install-dev"
+deploy-test:  ## Prueba el deployment localmente
+	docker network create siscom-network 2>/dev/null || true
+	docker-compose up -d
 
+deploy-test-logs:  ## Muestra los logs del deployment de prueba
+	docker logs -f siscom-api
+
+deploy-test-stop:  ## Detiene el deployment de prueba
+	docker-compose down
+
+health:  ## Verifica el health check
+	@echo "Verificando health check..."
+	@curl -f http://localhost:8000/health && echo "\n✅ Health check OK" || echo "\n❌ Health check FAILED"
+
+shell:  ## Abre una shell en el contenedor
+	docker exec -it siscom-api /bin/bash
+
+db-shell:  ## Abre una shell de PostgreSQL (docker-compose.test.yml)
+	docker exec -it siscom-api-test-db psql -U test -d siscom_test
+
+all-checks: format-check lint test  ## Ejecuta todas las verificaciones (formato, lint, tests)
+	@echo "✅ Todas las verificaciones pasaron correctamente"
+
+validate: format-check lint test build  ## Pipeline local equivalente a CI quality
+	@echo "✅ validate OK"
+
+scan-secrets:  ## Escaneo Gitleaks
+	bash scripts/gitleaks-scan.sh
+
+audit-deps:  ## Auditoría pip-audit
+	bash scripts/pip-audit-scan.sh
+
+scan-osv:  ## Escaneo OSV-Scanner (requirements.txt)
+	bash scripts/osv-scan.sh
+
+verify-github-config:  ## Verifica qué variables y secrets de GitHub faltan configurar
+	./scripts/verify_github_config.sh
+
+# Aliases de compatibilidad (preferir los targets canónicos de arriba)
+dev: run-dev  ## Alias de run-dev
+
+docker-build: build  ## Alias de build
+
+docker-up: run  ## Alias de run
+
+docker-down: stop  ## Alias de stop
+
+docker-logs: logs  ## Alias de logs

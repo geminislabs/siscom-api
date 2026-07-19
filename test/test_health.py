@@ -55,7 +55,7 @@ class TestHealthEndpoint:
         response = client.get("/health")
         data = response.json()
 
-        expected_keys = {"status", "service", "version"}
+        expected_keys = {"status", "service", "version", "kafka_circuit_breaker"}
         assert set(data.keys()) == expected_keys
 
     def test_health_check_no_auth_required(self, client: TestClient):

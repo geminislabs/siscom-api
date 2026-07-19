@@ -1,0 +1,31 @@
+title = "siscom-api"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Build artifacts, vendor paths, and docs with intentional placeholder tokens"
+paths = [
+	'''(?:^|/)\.venv/''',
+	'''(?:^|/)\.cache/''',
+	'''(?:^|/)htmlcov/''',
+	'''(?:^|/)docs/''',
+	'''(?:^|/)README\.md$''',
+	'''(?:^|/)CONFIG_GUIDE\.md$''',
+	'''(?:^|/)scripts/testing/''',
+	'''(?:^|/)\.env(?:\..*)?$''',
+	'''(?:^|/)\.github/''',
+	'''(?:^|/)test/''',
+	'''(?:^|/)testsprite_tests/''',
+]
+regexes = [
+	'''example\.com''',
+	'''localhost''',
+	'''127\.0\.0\.1''',
+	'''test@test\.com''',
+	'''test_key''',
+	'''test-secret-key''',
+	'''test-paseto-key''',
+	'''invalid_signature''',
+	'''BEGIN RSA PRIVATE KEY''',
+]

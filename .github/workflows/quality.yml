@@ -1,0 +1,123 @@
+name: Quality Checks
+
+on:
+  push:
+    branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      STATSD_ENABLED: "false"
+      DB_HOST: "localhost"
+      DB_PORT: "5432"
+      DB_USERNAME: "test"
+      DB_PASSWORD: "test"
+      DB_DATABASE: "siscom_test"
+      JWT_SECRET_KEY: "test-secret-key-for-ci-minimum-32-chars-long"
+      JWT_ALGORITHM: "HS256"
+      PASETO_LOCAL_KEY: "test-paseto-key-32-bytes-long!!"
+      PASETO_SECRET_KEY: "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI="
+      KAFKA_BOOTSTRAP_SERVERS: "localhost:9092"
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: siscom_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check code formatting (Black)
+        run: |
+          black --check app/ test/
+
+      - name: Lint code (Ruff)
+        run: |
+          ruff check app/ test/
+
+      - name: Run tests with coverage
+        run: |
+          pytest test/ -m "not slow" --cov=app --cov-report=term-missing --cov-report=xml --cov-fail-under=65 -q
+
+      - name: Build Docker image
+        run: docker build -t siscom-api:ci .
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+        continue-on-error: true
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Gitleaks secret scan
+        run: bash scripts/gitleaks-scan.sh
+
+      - name: Semgrep static analysis
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/secrets
+
+      - name: pip-audit dependency scan
+        run: bash scripts/pip-audit-scan.sh
+
+      - name: OSV dependency scan
+        run: bash scripts/osv-scan.sh
