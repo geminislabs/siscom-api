@@ -20,7 +20,8 @@ class FakeWebSocket:
 
     `receive_script` es una lista de `(delay, message)`: cada `receive()`
     espera `delay` segundos y devuelve `message`. Al agotarse el guion,
-    `receive()` bloquea "para siempre" (simula un cliente en silencio).
+    `receive()` espera 3600s y luego devuelve un `websocket.disconnect`
+    (simula un cliente en silencio hasta un cierre lejano).
     """
 
     def __init__(self, receive_script=None, fail_send=False):
@@ -35,6 +36,8 @@ class FakeWebSocket:
             delay, message = 3600, {"type": "websocket.disconnect", "code": 1000}
         if delay:
             await asyncio.sleep(delay)
+        if isinstance(message, Exception):
+            raise message
         return message
 
     async def send_json(self, data: dict) -> None:
@@ -174,6 +177,17 @@ class TestProcessWebsocketMessages:
                 await process_websocket_messages(ws, [queue])
 
             assert ws.sent == []
+
+        asyncio.run(run_test())
+
+    def test_receive_exception_normalized_to_disconnect(self):
+        """Un error en receive() se normaliza a WebSocketDisconnect, no crítico."""
+
+        async def run_test():
+            ws = FakeWebSocket([(0, RuntimeError("boom"))])
+
+            with pytest.raises(WebSocketDisconnect):
+                await process_websocket_messages(ws, [])
 
         asyncio.run(run_test())
 

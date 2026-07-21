@@ -237,10 +237,13 @@ async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
             await asyncio.sleep(settings.WEBSOCKET_KEEPALIVE_SECS)
 
             if datetime.now(UTC) >= expires_at:
+                # send y close en suppress independientes: si el aviso de
+                # expiración falla (socket ya cerrado), igual intentamos cerrar.
                 with suppress(Exception):
                     await websocket.send_json(
                         {"event": "expired", "data": {"message": "Token expired"}}
                     )
+                with suppress(Exception):
                     await websocket.close(code=1000, reason="Token expired")
                 return
 
@@ -253,6 +256,7 @@ async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
                 return
     except asyncio.CancelledError:
         logger.debug("Task de keep-alive público cancelado")
+        raise
 
 
 async def _process_queue_messages(

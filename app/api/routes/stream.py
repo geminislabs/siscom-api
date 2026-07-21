@@ -252,6 +252,7 @@ async def create_keepalive_task(
                     break
         except asyncio.CancelledError:
             logger.debug("Task de keep-alive cancelado")
+            raise
         except Exception as e:
             logger.error(f"Error inesperado en keep-alive: {e}")
 
@@ -275,9 +276,11 @@ async def process_websocket_messages(
         while True:
             queue_tasks = [asyncio.create_task(q.get()) for q in queues]
 
+            # Sin timeout: el keep-alive corre en otra task, así que aquí solo
+            # despertamos cuando hay un mensaje de cola o el cliente se
+            # desconecta (receive_task). Evita churn periódico con muchas conns.
             done, pending = await asyncio.wait(
                 [receive_task, *queue_tasks],
-                timeout=settings.WEBSOCKET_KEEPALIVE_SECS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
@@ -291,7 +294,17 @@ async def process_websocket_messages(
             # para excluirla del envío de eventos más abajo.
             completed_receive = receive_task if receive_task in done else None
             if completed_receive is not None:
-                message = completed_receive.result()
+                try:
+                    message = completed_receive.result()
+                except WebSocketDisconnect:
+                    raise
+                except Exception as recv_error:
+                    # Cualquier fallo de lectura se trata como desconexión, no
+                    # como error crítico (el handler lo loguearía como 💥).
+                    raise WebSocketDisconnect(
+                        code=1006, reason="Receive failed"
+                    ) from recv_error
+
                 if message.get("type") == "websocket.disconnect":
                     raise WebSocketDisconnect(
                         code=message.get("code", 1000),
@@ -300,10 +313,6 @@ async def process_websocket_messages(
                 # Frame entrante: este endpoint no espera datos, se ignora y
                 # se re-arma la lectura para seguir vigilando la conexión.
                 receive_task = asyncio.ensure_future(websocket.receive())
-
-            # Timeout de espera; keepalive se encarga de mantener conexión viva.
-            if not done:
-                continue
 
             for task in done:
                 if task is completed_receive:
