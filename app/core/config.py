@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     KAFKA_SASL_MECHANISM: str = "SCRAM-SHA-256"
     KAFKA_SECURITY_PROTOCOL: str = "SASL_PLAINTEXT"
 
+    # Streaming WebSocket
+    # Intervalo del ping keep-alive (segundos). Debe ser holgadamente MENOR que
+    # el idle timeout del proxy/load-balancer que tenga delante (ALB/nginx
+    # default 60s), o el proxy cerrará sockets ociosos (vehículos parados de
+    # noche → solo fluye el keep-alive). Recomendado ~20-25s bajo ese timeout.
+    WEBSOCKET_KEEPALIVE_SECS: int = 25
+
     # Para compatibilidad con código existente que use DATABASE_URL
     @property
     def DATABASE_URL(self) -> str:

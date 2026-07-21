@@ -43,6 +43,9 @@ services:
       KAFKA_AUTO_OFFSET_RESET: ${KAFKA_AUTO_OFFSET_RESET:-latest}
       KAFKA_USERNAME: ${KAFKA_USERNAME}
       KAFKA_PASSWORD: ${KAFKA_PASSWORD}
+
+      # Streaming WebSocket (keep-alive < idle timeout del proxy/ALB)
+      WEBSOCKET_KEEPALIVE_SECS: ${WEBSOCKET_KEEPALIVE_SECS:-25}
     healthcheck:
       test:
         [
