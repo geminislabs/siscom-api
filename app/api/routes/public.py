@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.api.routes.stream import ws_broker
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.repository import get_latest_communications
 from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
@@ -218,28 +219,44 @@ async def _validate_share_token(
     return device_id, datetime.fromisoformat(expires_at_str)
 
 
-async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> bool:
+async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
     """
-    Envía keep-alive y verifica expiración del token.
+    Envía pings keep-alive de forma periódica y cierra al expirar el token.
+
+    Corre en bucle mientras la conexión siga viva: cada
+    `WEBSOCKET_KEEPALIVE_SECS` segundos emite un ping para mantener el socket
+    activo por debajo del idle timeout del proxy/ALB. Al vencer el token envía
+    `expired` y cierra la conexión.
 
     Args:
         websocket: Conexión WebSocket
         expires_at: Fecha de expiración del token
-
-    Returns:
-        True si el token expiró, False si debe continuar
     """
-    await asyncio.sleep(60)
+    try:
+        while True:
+            await asyncio.sleep(settings.WEBSOCKET_KEEPALIVE_SECS)
 
-    if datetime.now(UTC) >= expires_at:
-        await websocket.send_json(
-            {"event": "expired", "data": {"message": "Token expired"}}
-        )
-        await websocket.close(code=1000, reason="Token expired")
-        return True
+            if datetime.now(UTC) >= expires_at:
+                # send y close en suppress independientes: si el aviso de
+                # expiración falla (socket ya cerrado), igual intentamos cerrar.
+                with suppress(Exception):
+                    await websocket.send_json(
+                        {"event": "expired", "data": {"message": "Token expired"}}
+                    )
+                with suppress(Exception):
+                    await websocket.close(code=1000, reason="Token expired")
+                return
 
-    await websocket.send_json({"event": "ping", "data": {"type": "keep-alive"}})
-    return False
+            try:
+                await websocket.send_json(
+                    {"event": "ping", "data": {"type": "keep-alive"}}
+                )
+            except Exception as e:
+                logger.warning(f"Error al enviar keep-alive público: {e}")
+                return
+    except asyncio.CancelledError:
+        logger.debug("Task de keep-alive público cancelado")
+        raise
 
 
 async def _process_queue_messages(
@@ -277,9 +294,12 @@ async def _process_queue_messages(
     if not done:
         if datetime.now(UTC) >= expires_at:
             logger.info(f"Token expirado durante WebSocket público: {device_id}")
-            await websocket.send_json(
-                {"event": "expired", "data": {"message": "Token expired"}}
-            )
+            # El task de keep-alive también vigila la expiración y puede haber
+            # cerrado el socket antes; toleramos el envío sobre socket cerrado.
+            with suppress(Exception):
+                await websocket.send_json(
+                    {"event": "expired", "data": {"message": "Token expired"}}
+                )
             return True
         return False
 

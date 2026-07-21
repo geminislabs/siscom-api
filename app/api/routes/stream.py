@@ -240,7 +240,7 @@ async def create_keepalive_task(
     async def send_keepalive():
         try:
             while connection_active.is_set():
-                await asyncio.sleep(60)
+                await asyncio.sleep(settings.WEBSOCKET_KEEPALIVE_SECS)
                 if not connection_active.is_set():
                     break
                 try:
@@ -252,6 +252,7 @@ async def create_keepalive_task(
                     break
         except asyncio.CancelledError:
             logger.debug("Task de keep-alive cancelado")
+            raise
         except Exception as e:
             logger.error(f"Error inesperado en keep-alive: {e}")
 
@@ -261,41 +262,80 @@ async def create_keepalive_task(
 async def process_websocket_messages(
     websocket: WebSocket, queues: list[asyncio.Queue]
 ) -> None:
-    """Consume la cola del socket y envía eventos al cliente."""
-    while True:
-        if not queues:
-            await asyncio.sleep(1)
-            continue
+    """Consume la cola del socket y envía eventos al cliente.
 
-        done, pending = await asyncio.wait(
-            [asyncio.create_task(q.get()) for q in queues],
-            timeout=60.0,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+    Lee el WebSocket en paralelo (`websocket.receive()`) para detectar la
+    desconexión del cliente de inmediato aunque no fluyan mensajes. Sin esto,
+    un cliente que se cae solo se detectaba al fallar un `send_json`, que de
+    noche con vehículos parados nunca ocurre → la suscripción quedaba huérfana
+    (fuga de subscribers zombie).
+    """
+    # Tarea persistente que espera datos entrantes / el frame de cierre.
+    receive_task = asyncio.ensure_future(websocket.receive())
+    try:
+        while True:
+            queue_tasks = [asyncio.create_task(q.get()) for q in queues]
 
-        for task in pending:
-            task.cancel()
+            # Sin timeout: el keep-alive corre en otra task, así que aquí solo
+            # despertamos cuando hay un mensaje de cola o el cliente se
+            # desconecta (receive_task). Evita churn periódico con muchas conns.
+            done, pending = await asyncio.wait(
+                [receive_task, *queue_tasks],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-        # Timeout de espera; keepalive se encarga de mantener conexión viva.
-        if not done:
-            continue
+            # Cancelar solo las lecturas de cola pendientes; nunca receive_task.
+            for task in pending:
+                if task is not receive_task:
+                    task.cancel()
 
-        for task in done:
-            try:
-                event = task.result()
-                event_name = (
-                    _resolve_websocket_event_name(event)
-                    if isinstance(event, dict)
-                    else "message"
-                )
-                await websocket.send_json({"event": event_name, "data": event})
-            except Exception as send_error:
-                logger.warning(
-                    f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
-                )
-                raise WebSocketDisconnect(
-                    code=1000, reason="Connection closed"
-                ) from send_error
+            # ¿Cliente desconectado o envió un frame? Detectarlo de inmediato.
+            # Guardamos la referencia a la task completada ANTES de re-armar,
+            # para excluirla del envío de eventos más abajo.
+            completed_receive = receive_task if receive_task in done else None
+            if completed_receive is not None:
+                try:
+                    message = completed_receive.result()
+                except WebSocketDisconnect:
+                    raise
+                except Exception as recv_error:
+                    # Cualquier fallo de lectura se trata como desconexión, no
+                    # como error crítico (el handler lo loguearía como 💥).
+                    raise WebSocketDisconnect(
+                        code=1006, reason="Receive failed"
+                    ) from recv_error
+
+                if message.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect(
+                        code=message.get("code", 1000),
+                        reason="Client disconnected",
+                    )
+                # Frame entrante: este endpoint no espera datos, se ignora y
+                # se re-arma la lectura para seguir vigilando la conexión.
+                receive_task = asyncio.ensure_future(websocket.receive())
+
+            for task in done:
+                if task is completed_receive:
+                    continue
+                try:
+                    event = task.result()
+                    event_name = (
+                        _resolve_websocket_event_name(event)
+                        if isinstance(event, dict)
+                        else "message"
+                    )
+                    await websocket.send_json({"event": event_name, "data": event})
+                except Exception as send_error:
+                    logger.warning(
+                        f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
+                    )
+                    raise WebSocketDisconnect(
+                        code=1000, reason="Connection closed"
+                    ) from send_error
+    finally:
+        receive_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await receive_task
 
 
 async def cleanup_websocket_connection(
