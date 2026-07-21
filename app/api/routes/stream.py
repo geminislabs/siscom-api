@@ -287,8 +287,11 @@ async def process_websocket_messages(
                     task.cancel()
 
             # ¿Cliente desconectado o envió un frame? Detectarlo de inmediato.
-            if receive_task in done:
-                message = receive_task.result()
+            # Guardamos la referencia a la task completada ANTES de re-armar,
+            # para excluirla del envío de eventos más abajo.
+            completed_receive = receive_task if receive_task in done else None
+            if completed_receive is not None:
+                message = completed_receive.result()
                 if message.get("type") == "websocket.disconnect":
                     raise WebSocketDisconnect(
                         code=message.get("code", 1000),
@@ -303,7 +306,7 @@ async def process_websocket_messages(
                 continue
 
             for task in done:
-                if task is receive_task:
+                if task is completed_receive:
                     continue
                 try:
                     event = task.result()
