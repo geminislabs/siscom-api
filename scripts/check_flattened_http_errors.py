@@ -16,6 +16,20 @@ dentro y 500 desde fuera.
 todos son inofensivos. Lo que importa es la conjunción, y eso pide recorrer el
 árbol sintáctico.
 
+**Por qué esto es una comprobación continua y no una auditoría puntual.** Un
+conteo sobre `app/` da 41 manejadores amplios, de los cuales **ninguno**
+re-lanza tal cual: todos capturan y transforman. Que hoy salga verde no es una
+propiedad del código, es que todavía no coincide ninguno con un `raise`
+deliberado. Dicho de otro modo: hay 41 sitios donde añadir un
+`raise HTTPException(503, ...)` produce un 500 en silencio. El valor de este
+script está en que corra cuando alguien añada el próximo, no en el verde de
+hoy — que es exactamente como apareció el caso de `/public/share-location/init`
+en este repo: al añadir el 503, no antes.
+
+El detector está calibrado con controles positivos y negativos en
+`test/test_check_flattened_http_errors.py`, incluidas las formas `except (X,
+Exception)` y `except:` desnudo, que son puntos ciegos fáciles de dejarse.
+
 La forma correcta es interceptar antes:
 
     except HTTPException:
