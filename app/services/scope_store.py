@@ -19,8 +19,10 @@ Reglas que este módulo respeta a propósito:
    revocado o caducado, no "permitir". La revocación en admin-api es un `DEL`,
    así que confundir ausencia con permiso anularía el único mecanismo de
    revocación.
-3. **Fallo de Valkey = denegado.** Fail closed, también cuando la causa es un
-   timeout o una caída del store.
+3. **Fallo de Valkey = denegado, pero dicho aparte.** El fail closed no se
+   relaja, pero un corte se propaga como `ScopeStoreUnavailable` en vez de
+   confundirse con "no autorizado": el primero es un problema de este servicio
+   y el segundo de la credencial, y quien llama debe poder distinguirlos.
 4. **Solo se lee `dt:scope:*`.** El índice inverso `dt:owner:*` de admin-api
    queda fuera del alcance de este servicio por diseño, y su ACL de Valkey
    debe reforzarlo. Aprender de él sería aprender de clientes.
@@ -37,6 +39,18 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 RefKind = Literal["dev", "unit"]
+
+
+class ScopeStoreUnavailable(Exception):
+    """No se pudo consultar Valkey: sin configurar, caído o con timeout.
+
+    Se distingue a propósito de "la referencia no está en el scope". Las dos
+    deniegan el acceso —el fail closed no se relaja—, pero significan cosas
+    distintas para quien llama: una es un problema de credencial y la otra un
+    problema de este servicio, y confundirlas manda al cliente a reintentar
+    con otra credencial un fallo que ninguna credencial arregla.
+    """
+
 
 # (scope_ref, kind, ref) → (id interno o None, instante de caducidad monotónico)
 _CacheKey = tuple[str, str, str]
@@ -111,8 +125,12 @@ class ScopeStore:
 
         Returns:
             El identificador interno (`device_id` / `unit_id`) si el scope
-            concede la referencia. `None` en cualquier otro caso: campo
-            ausente, clave revocada, error o timeout de Valkey, o store caído.
+            concede la referencia, o `None` si no la concede: campo ausente o
+            clave revocada.
+
+        Raises:
+            ScopeStoreUnavailable: si no se pudo consultar Valkey. También
+                deniega el acceso, pero por un motivo que no es del cliente.
         """
         cache_key: _CacheKey = (scope_ref, kind, ref)
 
@@ -122,16 +140,17 @@ class ScopeStore:
 
         client = self._connect()
         if client is None:
-            return None
+            raise ScopeStoreUnavailable("VALKEY_URL no configurada")
 
         try:
             resolved = await client.hget(f"dt:scope:{scope_ref}:{kind}", ref)
         except Exception as e:
-            # Fail closed y sin cachear: un corte de Valkey no debe quedar
-            # congelado como denegación durante los siguientes 30 s, ni como
-            # permiso.
+            # Se propaga en vez de devolver None, y sin cachear: un corte no
+            # debe quedar congelado como denegación durante los siguientes
+            # 30 s, ni convertirse en un 403 que le diga al cliente que su
+            # credencial es el problema.
             logger.error(f"Error resolviendo el scope en Valkey: {e}")
-            return None
+            raise ScopeStoreUnavailable(str(e)) from e
 
         self._cache_store(
             cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
@@ -156,8 +175,10 @@ class ScopeStore:
 
         Returns:
             (referencia, id_interno) si el scope contiene exactamente una, o
-            `None` en cualquier otro caso: vacío, revocado, más de una entrada,
-            o Valkey inaccesible.
+            `None` si no: vacío, revocado, o más de una entrada.
+
+        Raises:
+            ScopeStoreUnavailable: si no se pudo consultar Valkey.
         """
         cache_key: _CacheKey = (scope_ref, kind, _SINGLE_SENTINEL)
 
@@ -167,13 +188,13 @@ class ScopeStore:
 
         client = self._connect()
         if client is None:
-            return None
+            raise ScopeStoreUnavailable("VALKEY_URL no configurada")
 
         try:
             entries = await client.hgetall(f"dt:scope:{scope_ref}:{kind}")
         except Exception as e:
             logger.error(f"Error resolviendo el scope de compartir en Valkey: {e}")
-            return None
+            raise ScopeStoreUnavailable(str(e)) from e
 
         resolved: str | None = None
         if len(entries) == 1:

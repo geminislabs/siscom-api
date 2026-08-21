@@ -206,3 +206,82 @@ class TestObservationMode:
 
         response = client.get(f"/api/v1/communications/latest?device_ids={_IMEI}")
         assert response.json()[0]["device_id"] == _IMEI
+
+
+@pytest.mark.unit
+class TestDegradedStates:
+    """Estados intermedios del despliegue que nadie planea pero que ocurren.
+
+    La distinción entre 4xx y 503 no es cosmética: el cliente reacciona a un
+    401/403 reemitiendo el data token y reintentando. Si el fallo es del
+    servidor —falta la clave pública, Valkey no responde—, ninguna credencial
+    nueva lo arregla y el reintento se convierte en una tormenta de reemisiones
+    contra admin-api.
+    """
+
+    @pytest.fixture
+    def enforced_without_key(self, monkeypatch):
+        """Interruptor encendido antes de configurar la clave pública."""
+        from app.core.data_token import DataTokenVerifier
+
+        monkeypatch.setattr(
+            "app.core.data_token.settings.DATA_TOKEN_PUBLIC_KEY_B64", ""
+        )
+        monkeypatch.setattr("app.api.deps.settings.DATA_TOKEN_ENFORCED", True)
+        monkeypatch.setattr("app.api.deps.data_token_verifier", DataTokenVerifier())
+
+    @pytest.fixture
+    def enforced_without_valkey(self, monkeypatch, enforced):
+        """Clave configurada, pero el store de autorización no responde."""
+        from app.services.scope_store import ScopeStoreUnavailable
+
+        class _DownStore:
+            async def resolve(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
+        monkeypatch.setattr("app.api.deps.scope_store", _DownStore())
+
+    def test_missing_public_key_is_503_not_401(
+        self, client: TestClient, enforced_without_key
+    ):
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Data plane not configured"
+
+    def test_valkey_outage_is_503_not_403(
+        self, client: TestClient, enforced_without_valkey
+    ):
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Authorization store unavailable"
+
+    def test_a_missing_token_is_still_401_when_unconfigured(
+        self, client: TestClient, enforced_without_key
+    ):
+        """Sin credencial el 401 es correcto, aunque el servidor esté a medias."""
+        response = client.get(f"/api/v1/communications/latest?device_ids={_REF}")
+        assert response.status_code == 401
+
+    def test_a_genuine_denial_is_still_403(self, client: TestClient, enforced):
+        """El 503 no se come el caso que de verdad importa."""
+        response = client.get(
+            "/api/v1/communications/latest?device_ids=ref-ajena",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 403
+
+    def test_degraded_states_never_serve_data(
+        self, client: TestClient, enforced_without_valkey
+    ):
+        """Fail closed: degradado deniega, no abre."""
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code >= 400

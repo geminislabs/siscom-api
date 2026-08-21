@@ -219,3 +219,41 @@ class TestGrantTranslation:
         )
         assert frame["data"]["device_id"] == _REF
         assert _IMEI not in json.dumps(frame)
+
+
+@pytest.mark.unit
+class TestShareStoreOutage:
+    """Un corte de Valkey no es un enlace roto.
+
+    Devolver 403 a quien abre un enlace compartido le dice que su enlace ya no
+    vale y deja de intentarlo. Si lo que falla es nuestra capacidad de
+    comprobarlo, la respuesta correcta es "vuelve luego".
+    """
+
+    @pytest.fixture
+    def store_down(self, share_env, monkeypatch):
+        from app.services.scope_store import ScopeStoreUnavailable
+
+        class _DownStore:
+            async def resolve_single(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
+        share_env()
+        monkeypatch.setattr("app.api.deps.scope_store", _DownStore())
+
+    async def test_outage_is_reported_apart_from_an_invalid_token(self, store_down):
+        from app.api.deps import ShareStoreUnavailable
+
+        with pytest.raises(ShareStoreUnavailable):
+            await resolve_share_token(_data_token())
+
+    async def test_outage_does_not_masquerade_as_invalid(self, store_down):
+        """`ShareStoreUnavailable` hereda de `ShareTokenError`, no de Invalid."""
+        from app.api.deps import ShareStoreUnavailable
+
+        assert not issubclass(ShareStoreUnavailable, ShareTokenInvalid)
+
+    async def test_the_legacy_path_does_not_touch_valkey(self, store_down):
+        """El token heredado se valida con su clave; el store no interviene."""
+        grant = await resolve_share_token(_legacy_token())
+        assert grant.device_id == _IMEI

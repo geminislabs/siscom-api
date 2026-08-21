@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 
 from app.api.deps import (
     ShareGrant,
+    ShareStoreUnavailable,
     ShareTokenExpired,
     ShareTokenInvalid,
     resolve_share_token,
@@ -159,6 +160,15 @@ async def init_share_location(
                     "last_communication": None,
                 }
 
+    except ShareStoreUnavailable as e:
+        # 503, no 403: el enlace puede ser perfectamente válido; lo que falla
+        # es nuestra capacidad de comprobarlo. Un 403 le diría a quien abre el
+        # enlace que ya no vale, y dejaría de intentarlo.
+        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        raise HTTPException(
+            status_code=503, detail="Authorization store unavailable"
+        ) from None
+
     except ShareTokenExpired:
         logger.warning("Intento de acceso con token expirado")
         raise HTTPException(status_code=401, detail="Token expired") from None
@@ -193,6 +203,11 @@ async def _validate_share_token(websocket: WebSocket, token: str) -> ShareGrant 
     """
     try:
         return await resolve_share_token(token)
+    except ShareStoreUnavailable as e:
+        # 1013 (Try Again Later): reintentar sirve, pedir otro enlace no.
+        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        await websocket.close(code=1013, reason="Authorization store unavailable")
+        return None
     except ShareTokenExpired:
         logger.warning("Intento de WebSocket público con token expirado")
         await websocket.close(code=1008, reason="Token expired")

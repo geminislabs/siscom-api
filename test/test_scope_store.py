@@ -7,7 +7,7 @@ denegar, nunca permitir. Un fallo abierto en este punto expone la flota ajena.
 
 import pytest
 
-from app.services.scope_store import ScopeStore
+from app.services.scope_store import ScopeStore, ScopeStoreUnavailable
 
 
 class FakeValkey:
@@ -72,14 +72,21 @@ class TestFailClosed:
         instance, _ = store({})
         assert await instance.resolve("s1", "dev", "ref-a", 30) is None
 
-    async def test_valkey_outage_denies_instead_of_allowing(self, store):
-        instance, _ = store(fail=True)
-        assert await instance.resolve("s1", "dev", "ref-a", 30) is None
+    async def test_valkey_outage_is_reported_apart_from_denial(self, store):
+        """Sigue denegando, pero se distingue de "no autorizado".
 
-    async def test_unconfigured_valkey_denies(self, monkeypatch):
-        """Sin VALKEY_URL no hay resolución posible, y eso es denegar."""
+        Las dos cosas niegan el acceso, pero una es un problema de la
+        credencial y la otra de este servicio. Confundirlas hace que el cliente
+        reemita el token para arreglar un corte de Valkey.
+        """
+        instance, _ = store(fail=True)
+        with pytest.raises(ScopeStoreUnavailable):
+            await instance.resolve("s1", "dev", "ref-a", 30)
+
+    async def test_unconfigured_valkey_is_reported_apart_too(self, monkeypatch):
         monkeypatch.setattr("app.services.scope_store.settings.VALKEY_URL", "")
-        assert await ScopeStore().resolve("s1", "dev", "ref-a", 30) is None
+        with pytest.raises(ScopeStoreUnavailable):
+            await ScopeStore().resolve("s1", "dev", "ref-a", 30)
 
 
 @pytest.mark.unit
@@ -100,8 +107,9 @@ class TestCaching:
     async def test_an_outage_is_never_cached(self, store):
         """Un corte no debe congelar 30 s de denegaciones tras recuperarse."""
         instance, fake = store(fail=True)
-        await instance.resolve("s1", "dev", "ref-a", 30)
-        await instance.resolve("s1", "dev", "ref-a", 30)
+        for _ in range(2):
+            with pytest.raises(ScopeStoreUnavailable):
+                await instance.resolve("s1", "dev", "ref-a", 30)
         assert len(fake.calls) == 2
 
     async def test_a_zero_ceiling_disables_caching(self, store):

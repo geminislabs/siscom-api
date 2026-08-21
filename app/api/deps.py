@@ -39,7 +39,7 @@ from app.core.data_token import (
     InvalidDataToken,
     data_token_verifier,
 )
-from app.services.scope_store import RefKind, scope_store
+from app.services.scope_store import RefKind, ScopeStoreUnavailable, scope_store
 from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
 
 logger = logging.getLogger(__name__)
@@ -171,11 +171,30 @@ def collect_requested_refs(
 
 
 def verify_data_token(token: str | None) -> DataTokenClaims:
-    """Verifica el token y traduce los fallos a 401."""
+    """Verifica el token y traduce los fallos al código que corresponde.
+
+    401 y 403 dicen "tu credencial no sirve"; 503 dice "este servicio no puede
+    contestar ahora". Confundirlos no es cosmético: el cliente de nexus-web
+    reacciona a un 401/403 reemitiendo el data token y reintentando, así que
+    devolver 401 porque falta una clave en el servidor provoca una tormenta de
+    reemisiones contra admin-api para arreglar algo que ninguna credencial
+    arregla.
+    """
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing data token"
         )
+
+    if not data_token_verifier.is_configured:
+        logger.error(
+            "DATA_TOKEN_ENFORCED está activo pero DATA_TOKEN_PUBLIC_KEY_B64 no "
+            "está configurada: no se puede verificar nada."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Data plane not configured",
+        )
+
     try:
         return data_token_verifier.verify(token)
     except ExpiredDataToken as e:
@@ -213,7 +232,18 @@ async def resolve_refs(
     ceiling = cache_ceiling(claims)
 
     for kind, ref in requested:
-        internal_id = await scope_store.resolve(claims.scope_ref, kind, ref, ceiling)
+        try:
+            internal_id = await scope_store.resolve(
+                claims.scope_ref, kind, ref, ceiling
+            )
+        except ScopeStoreUnavailable as e:
+            # Se deniega igual —no se sirve nada sin autorizar—, pero con el
+            # código que dice de quién es el problema.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authorization store unavailable",
+            ) from e
+
         if internal_id is None:
             logger.warning(
                 f"Acceso denegado — jti={claims.jti} tipo={kind} "
@@ -294,6 +324,39 @@ def to_external_models(request: Request, models: list) -> list:
     ]
 
 
+async def _reject_websocket(
+    websocket: WebSocket, code: int, reason: str
+) -> tuple[bool, str | None, RefTranslation]:
+    """Cierra el handshake sin aceptarlo y devuelve el rechazo."""
+    logger.warning(f"WebSocket rechazado ({code}): {reason}")
+    await websocket.close(code=code, reason=reason)
+    return False, None, RefTranslation()
+
+
+async def _verify_websocket_claims(
+    websocket: WebSocket, token: str | None
+) -> DataTokenClaims | tuple[bool, str | None, RefTranslation]:
+    """Verifica el token del handshake, o devuelve ya la tupla de rechazo."""
+    if not token:
+        return await _reject_websocket(websocket, 1008, "Missing data token")
+
+    if not data_token_verifier.is_configured:
+        logger.error(
+            "DATA_TOKEN_ENFORCED está activo pero DATA_TOKEN_PUBLIC_KEY_B64 no "
+            "está configurada: no se puede verificar nada."
+        )
+        # 1013 (Try Again Later), no 1008: el problema es del servidor.
+        return await _reject_websocket(websocket, 1013, "Data plane not configured")
+
+    try:
+        return data_token_verifier.verify(token)
+    except ExpiredDataToken:
+        return await _reject_websocket(websocket, 1008, "Data token expired")
+    except InvalidDataToken as e:
+        logger.warning(f"Data token de ws rechazado: {e}")
+        return await _reject_websocket(websocket, 1008, "Invalid data token")
+
+
 async def authorize_websocket(
     websocket: WebSocket, device_refs: list[str]
 ) -> tuple[bool, str | None, RefTranslation]:
@@ -303,9 +366,12 @@ async def authorize_websocket(
     pasarse a `websocket.accept(subprotocol=...)`; si se omite cuando el cliente
     ofreció uno, el navegador cierra la conexión nada más abrirla.
 
-    Un rechazo cierra el handshake con 1008 sin aceptar, así que el cliente no
-    llega a tener conexión. No se puede enviar un cuerpo explicativo: antes de
-    aceptar no hay canal por el que mandarlo.
+    Un rechazo cierra el handshake sin aceptar, así que el cliente no llega a
+    tener conexión. No se puede enviar un cuerpo explicativo —antes de aceptar
+    no hay canal por el que mandarlo—, así que el código de cierre es el único
+    dato que recibe: **1008 significa "tu credencial no sirve"; 1013,
+    "reintenta, el problema es mío"**. Confundirlos manda al cliente a reemitir
+    la credencial para arreglar algo que ninguna credencial arregla.
     """
     token, subprotocol = extract_websocket_token(websocket)
     translation = RefTranslation()
@@ -321,33 +387,31 @@ async def authorize_websocket(
             logger.info("[observación] conexión WebSocket sin data token")
         return True, subprotocol, translation
 
-    if not token:
-        logger.warning("WebSocket rechazado: sin data token en el subprotocolo")
-        await websocket.close(code=1008, reason="Missing data token")
-        return False, None, translation
-
-    try:
-        claims = data_token_verifier.verify(token)
-    except ExpiredDataToken:
-        await websocket.close(code=1008, reason="Data token expired")
-        return False, None, translation
-    except InvalidDataToken as e:
-        logger.warning(f"WebSocket rechazado: {e}")
-        await websocket.close(code=1008, reason="Invalid data token")
-        return False, None, translation
+    verified = await _verify_websocket_claims(websocket, token)
+    if isinstance(verified, tuple):
+        return verified
+    claims = verified
 
     logger.info(f"ws jti={claims.jti} refs={len(device_refs)}")
 
     ceiling = cache_ceiling(claims)
     for ref in device_refs:
-        internal_id = await scope_store.resolve(claims.scope_ref, "dev", ref, ceiling)
+        try:
+            internal_id = await scope_store.resolve(
+                claims.scope_ref, "dev", ref, ceiling
+            )
+        except ScopeStoreUnavailable:
+            return await _reject_websocket(
+                websocket, 1013, "Authorization store unavailable"
+            )
+
         if internal_id is None:
             logger.warning(
                 f"WebSocket rechazado — jti={claims.jti} "
                 "(referencia no concedida por el scope)"
             )
-            await websocket.close(code=1008, reason="Not authorized")
-            return False, None, translation
+            return await _reject_websocket(websocket, 1008, "Not authorized")
+
         translation.add(ref, internal_id)
 
     return True, subprotocol, translation
@@ -401,6 +465,14 @@ class ShareTokenExpired(ShareTokenError):
 
 class ShareTokenInvalid(ShareTokenError):
     """Token ausente, malformado, mal firmado o sin alcance resoluble."""
+
+
+class ShareStoreUnavailable(ShareTokenError):
+    """No se pudo comprobar el alcance: el problema es de este servicio.
+
+    Se distingue de `ShareTokenInvalid` para no decirle a quien abre un enlace
+    que su enlace está roto cuando lo que pasa es que Valkey no responde.
+    """
 
 
 class ShareGrant:
@@ -460,9 +532,13 @@ async def resolve_share_token(token: str) -> ShareGrant:
         except InvalidDataToken as e:
             raise ShareTokenInvalid(str(e)) from e
 
-        resolved = await scope_store.resolve_single(
-            claims.scope_ref, "dev", cache_ceiling(claims)
-        )
+        try:
+            resolved = await scope_store.resolve_single(
+                claims.scope_ref, "dev", cache_ceiling(claims)
+            )
+        except ScopeStoreUnavailable as e:
+            # No es un token inválido: es que no podemos comprobarlo.
+            raise ShareStoreUnavailable(str(e)) from e
         if resolved is None:
             logger.warning(
                 f"Enlace de compartir sin alcance resoluble — jti={claims.jti}"
