@@ -28,6 +28,7 @@ hay trazabilidad. Por separado, ninguno identifica a nadie.
 """
 
 import logging
+from datetime import datetime
 
 from fastapi import HTTPException, Request, WebSocket, status
 
@@ -39,6 +40,7 @@ from app.core.data_token import (
     data_token_verifier,
 )
 from app.services.scope_store import RefKind, scope_store
+from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
 
 logger = logging.getLogger(__name__)
 
@@ -384,3 +386,105 @@ def translate_ws_message(message, translation: RefTranslation):
         return [translate_ws_message(item, translation) for item in message]
 
     return message
+
+
+# ── Compartir ubicación ─────────────────────────────────────────────────────
+
+
+class ShareTokenError(Exception):
+    """Base de los errores de token de compartir ubicación."""
+
+
+class ShareTokenExpired(ShareTokenError):
+    """Token bien formado pero vencido."""
+
+
+class ShareTokenInvalid(ShareTokenError):
+    """Token ausente, malformado, mal firmado o sin alcance resoluble."""
+
+
+class ShareGrant:
+    """Lo que concede un enlace de compartir: un solo dispositivo, hasta `exp`.
+
+    `device_ref` es lo que se devuelve al cliente; `device_id` lo que se
+    consulta contra la base de datos. En el formato heredado ambos coinciden,
+    porque el token viejo transporta el IMEI directamente.
+    """
+
+    def __init__(self, device_ref: str, device_id: str, expires_at, legacy: bool):
+        self.device_ref = device_ref
+        self.device_id = device_id
+        self.expires_at = expires_at
+        self.legacy = legacy
+
+    @property
+    def translation(self) -> RefTranslation:
+        """Traducción para las tramas de salida del WebSocket público."""
+        translation = RefTranslation()
+        if not self.legacy:
+            translation.add(self.device_ref, self.device_id)
+        return translation
+
+
+async def resolve_share_token(token: str) -> ShareGrant:
+    """Resuelve un token de compartir ubicación, en cualquiera de sus formatos.
+
+    Los dos formatos se distinguen por el prefijo, que es inequívoco:
+
+    - `v4.public.` → **data token**. Alcance por `scope_ref`, resuelto contra
+      Valkey. El token no lleva IMEI; lo pone el HASH.
+    - `v4.local.`  → **formato heredado**, con el `device_id` dentro del propio
+      token. Se acepta mientras `SHARE_LOCATION_ACCEPT_LEGACY_TOKEN` siga
+      activo; apagarlo cierra el formato antiguo sin tocar código.
+
+    Cada camino se verifica con su propia clave, así que aceptar ambos no
+    debilita ninguno: un token del formato viejo no vale como data token ni al
+    revés.
+    """
+    if not token:
+        raise ShareTokenInvalid("Empty token")
+
+    if token.startswith("v4.public."):
+        try:
+            claims = data_token_verifier.verify(token)
+        except ExpiredDataToken as e:
+            raise ShareTokenExpired(str(e)) from e
+        except InvalidDataToken as e:
+            raise ShareTokenInvalid(str(e)) from e
+
+        resolved = await scope_store.resolve_single(
+            claims.scope_ref, "dev", cache_ceiling(claims)
+        )
+        if resolved is None:
+            logger.warning(
+                f"Enlace de compartir sin alcance resoluble — jti={claims.jti}"
+            )
+            raise ShareTokenInvalid("Share scope is empty, revoked or too broad")
+
+        device_ref, device_id = resolved
+        logger.info(f"Enlace de compartir válido — jti={claims.jti}")
+        return ShareGrant(device_ref, device_id, claims.expires_at, legacy=False)
+
+    if not settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN:
+        raise ShareTokenInvalid("Legacy share tokens are no longer accepted")
+
+    try:
+        payload = paseto_validator.validate(token)
+    except ExpiredToken as e:
+        raise ShareTokenExpired(str(e)) from e
+    except InvalidToken as e:
+        raise ShareTokenInvalid(str(e)) from e
+
+    device_id = payload.get("device_id")
+    if not device_id:
+        raise ShareTokenInvalid("Missing device_id")
+
+    expires_at_raw = payload.get("exp")
+    if not expires_at_raw:
+        raise ShareTokenInvalid("Missing exp")
+
+    # En el formato heredado no hay espacio de referencias: el token trae el
+    # IMEI, así que se devuelve tal cual y no hay nada que traducir.
+    return ShareGrant(
+        device_id, device_id, datetime.fromisoformat(expires_at_raw), legacy=True
+    )

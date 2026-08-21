@@ -77,8 +77,13 @@ class Settings(BaseSettings):
 
     # Marcadores adicionales aceptados, separados por comas. Permite renombrar
     # el marcador sin desplegar clientes y servidor en el mismo instante. El eco
-    # devuelve siempre el que el cliente ofreció.
-    DATA_TOKEN_WS_SUBPROTOCOL_ALIASES: str = "nexus.data-token"
+    # devuelve siempre el que el cliente ofreció. Vacío = solo el preferido.
+    DATA_TOKEN_WS_SUBPROTOCOL_ALIASES: str = ""
+
+    # Compartir ubicación: aceptar todavía el token v4.local heredado además
+    # del data token. Ponerlo a False cierra el formato antiguo sin tocar
+    # código, una vez admin-api emita solo data tokens.
+    SHARE_LOCATION_ACCEPT_LEGACY_TOKEN: bool = True
 
     # ── Valkey (resolución de scope_ref → refs autorizados) ─────────────────
     #

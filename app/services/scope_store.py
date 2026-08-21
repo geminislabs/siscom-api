@@ -41,6 +41,10 @@ RefKind = Literal["dev", "unit"]
 # (scope_ref, kind, ref) → (id interno o None, instante de caducidad monotónico)
 _CacheKey = tuple[str, str, str]
 
+# Marcador de campo para las entradas de `resolve_single`, que no consultan una
+# referencia concreta. No puede colisionar con una referencia real.
+_SINGLE_SENTINEL = "\x00__single__"
+
 
 class ScopeStore:
     """Cliente de solo lectura sobre las claves de scope en Valkey."""
@@ -133,6 +137,58 @@ class ScopeStore:
             cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
         )
         return resolved
+
+    async def resolve_single(
+        self, scope_ref: str, kind: RefKind, max_cache_secs: float
+    ) -> tuple[str, str] | None:
+        """Resuelve un scope que debe contener **exactamente una** referencia.
+
+        Es el caso de compartir ubicación: la URL pública solo lleva el token,
+        sin referencia, así que no hay campo por el que preguntar con `HGET` y
+        hay que leer el hash entero.
+
+        Leerlo entero es aceptable aquí, y solo aquí, porque un enlace
+        compartido es por definición de un dispositivo. Y esa suposición se
+        **comprueba** en vez de darse por buena: si el hash trae más de una
+        entrada se deniega. Si admin-api emitiera por error un token de
+        compartir con alcance de flota, un enlace público expondría la flota
+        entera; preferimos que ese fallo se convierta en un 403 ruidoso.
+
+        Returns:
+            (referencia, id_interno) si el scope contiene exactamente una, o
+            `None` en cualquier otro caso: vacío, revocado, más de una entrada,
+            o Valkey inaccesible.
+        """
+        cache_key: _CacheKey = (scope_ref, kind, _SINGLE_SENTINEL)
+
+        cached, value = self._cache_lookup(cache_key)
+        if cached:
+            return None if value is None else tuple(value.split("\x00", 1))  # type: ignore[return-value]
+
+        client = self._connect()
+        if client is None:
+            return None
+
+        try:
+            entries = await client.hgetall(f"dt:scope:{scope_ref}:{kind}")
+        except Exception as e:
+            logger.error(f"Error resolviendo el scope de compartir en Valkey: {e}")
+            return None
+
+        resolved: str | None = None
+        if len(entries) == 1:
+            ref, internal_id = next(iter(entries.items()))
+            resolved = f"{ref}\x00{internal_id}"
+        elif len(entries) > 1:
+            logger.error(
+                f"Scope de compartir con {len(entries)} referencias: se esperaba "
+                "exactamente una. Denegado."
+            )
+
+        self._cache_store(
+            cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
+        )
+        return None if resolved is None else tuple(resolved.split("\x00", 1))  # type: ignore[return-value]
 
 
 scope_store = ScopeStore()
