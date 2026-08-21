@@ -105,9 +105,23 @@ class TestKeyConfiguration:
         validator = configure_keys(new="", legacy=LEGACY_KEY)
         assert validator.validate(_make_token(LEGACY_KEY))["device_id"]
 
-    def test_no_key_configured_is_a_startup_error(self, configure_keys):
-        with pytest.raises(RuntimeError, match="No share-location key configured"):
-            configure_keys(new="", legacy="")
+    def test_no_key_configured_still_boots(self, configure_keys):
+        """Sin ninguna clave el servicio arranca; solo deja de validar.
+
+        Es el estado al que lleva el paso que cierra la escalada: borrar
+        `PASETO_SECRET_KEY` del entorno. Como `SHARE_LOCATION_KEY_B64` no se
+        configura en ningún sitio tras migrar a v4.public, ese borrado deja
+        este validador sin claves. Si eso impidiera arrancar, el paso más
+        urgente de la fase tumbaría el servicio y nadie lo ejecutaría.
+        """
+        validator = configure_keys(new="", legacy="")
+        assert validator.keys == []
+
+    def test_without_keys_every_legacy_token_is_rejected(self, configure_keys):
+        """Arrancar sin claves no es arrancar permisivo: no valida nada."""
+        validator = configure_keys(new="", legacy="")
+        with pytest.raises(InvalidToken):
+            validator.validate(_make_token(LEGACY_KEY))
 
     def test_malformed_new_key_is_a_startup_error(self, configure_keys):
         """La clave nueva sí es estricta: un valor mal copiado no arranca."""

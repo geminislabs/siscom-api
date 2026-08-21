@@ -123,9 +123,22 @@ class PasetoValidator:
             self.keys.append((name, Key.new(version=4, purpose="local", key=key_bytes)))
 
         if not self.keys:
-            raise RuntimeError(
-                "No share-location key configured: set SHARE_LOCATION_KEY_B64 "
-                "(or, during migration, PASETO_SECRET_KEY)"
+            # NO es un error de arranque, y es deliberado.
+            #
+            # El paso que cierra la escalada de la API interna consiste en
+            # borrar PASETO_SECRET_KEY del entorno. Como la migración a
+            # v4.public dejó SHARE_LOCATION_KEY_B64 sin configurar en ningún
+            # sitio, ese borrado deja este validador sin ninguna clave. Si eso
+            # impidiera arrancar, el paso más urgente de la fase tumbaría el
+            # servicio y nadie lo ejecutaría.
+            #
+            # Para entonces el validador heredado ya no hace falta: compartir
+            # ubicación va por data token. Así que sin clave no se valida nada
+            # —fail closed— pero el servicio arranca con normalidad.
+            logger.info(
+                "Sin clave de compartir ubicación heredada configurada: los "
+                "tokens v4.local quedan rechazados. Es el estado esperado una "
+                "vez migrado a data tokens (v4.public)."
             )
 
         if any(name == "PASETO_SECRET_KEY" for name, _ in self.keys):
@@ -137,6 +150,9 @@ class PasetoValidator:
 
     def _decode(self, token: str) -> bytes:
         """Prueba las claves en orden y devuelve el payload de la primera válida."""
+        if not self.keys:
+            raise InvalidToken("No legacy share-location key configured")
+
         last_error: Exception | None = None
 
         for name, key in self.keys:
