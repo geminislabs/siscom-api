@@ -110,10 +110,14 @@ class PasetoValidator:
                 if strict:
                     raise RuntimeError(message)
                 logger.warning(
-                    f"⚠️  {message}. La clave heredada no es base64 de "
-                    f"{_V4_LOCAL_KEY_BYTES} bytes: se conserva por "
-                    "compatibilidad, pero la clave efectiva es más débil de lo "
-                    "previsto. Un motivo más para cerrar la migración."
+                    f"⚠️  {message}. Se conserva por compatibilidad, pero además "
+                    "de perder entropía esto ROMPE LA INTEROPERABILIDAD: "
+                    "siscom-admin-api rellena con ceros hasta "
+                    f"{_V4_LOCAL_KEY_BYTES} bytes y este servicio no, así que "
+                    "una clave que no mida ya 32 produce material efectivo "
+                    "distinto en cada servicio aunque la variable tenga el "
+                    "mismo contenido, y los tokens de compartir ubicación no "
+                    "validan entre servicios. Ver scripts/share_key_fingerprint.py"
                 )
 
             self.keys.append((name, Key.new(version=4, purpose="local", key=key_bytes)))

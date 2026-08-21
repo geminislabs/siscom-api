@@ -53,14 +53,34 @@ def fingerprint(label: str, configured: str) -> None:
         return
 
     digest = hashlib.sha256(effective).hexdigest()[:12]
-    warnings = []
-    if len(effective) != _V4_LOCAL_KEY_BYTES:
-        warnings.append(f"{len(effective)} bytes, se esperaban {_V4_LOCAL_KEY_BYTES}")
-    if effective and not any(effective):
-        warnings.append("¡CLAVE DE CEROS, es pública!")
+    print(f"{label:<26} {digest}")
 
-    suffix = f"  ⚠️  {'; '.join(warnings)}" if warnings else ""
-    print(f"{label:<26} {digest}{suffix}")
+    try:
+        base64.b64decode(configured, validate=True)
+    except Exception:
+        print(
+            "    ⚠️  No es base64 estricto: el decodificador laxo está "
+            "descartando caracteres en silencio."
+        )
+
+    if len(effective) != _V4_LOCAL_KEY_BYTES:
+        print(
+            f"    ⚠️  {len(effective)} bytes; PASETO v4.local requiere "
+            f"{_V4_LOCAL_KEY_BYTES}."
+        )
+        # Este es el punto importante y el menos evidente: no es solo una
+        # cuestión de entropía. admin-api rellena con ceros hasta 32 bytes y
+        # siscom-api no, así que una clave que no mida ya 32 produce material
+        # EFECTIVO distinto en cada servicio aunque la cadena configurada sea
+        # idéntica. Los tokens no validan entre servicios, y la comparación de
+        # huellas dará distinto sin que nadie haya configurado nada mal.
+        print("    🚨 admin-api rellena con ceros hasta 32 bytes y siscom-api no.")
+        print("       Con una clave que no mida 32, las claves EFECTIVAS divergen")
+        print("       aunque las dos variables tengan el mismo contenido:")
+        print("       compartir ubicación NO valida entre servicios.")
+
+    if effective and not any(effective):
+        print("    🚨 CLAVE DE CEROS: es el marcador del .env.example, es PÚBLICA.")
 
 
 def main() -> None:
@@ -69,8 +89,10 @@ def main() -> None:
     fingerprint("PASETO_SECRET_KEY", settings.PASETO_SECRET_KEY)
     print(
         "\nCompara cada huella con la del mismo nombre en admin-api.\n"
-        "Distintas = claves distintas = compartir ubicación no valida entre"
-        " servicios."
+        "\n  Iguales   → misma cadena Y misma derivación: el flujo funciona.\n"
+        "  Distintas → NO deduzcas que las variables tienen contenido distinto.\n"
+        "              Si arriba hay aviso de longitud, basta el relleno para\n"
+        "              explicarlo. Los avisos dicen cuál de las dos cosas falló."
     )
 
 

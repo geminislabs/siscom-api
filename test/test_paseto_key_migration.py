@@ -132,7 +132,10 @@ class TestKeyConfiguration:
             new="", legacy=base64.b64encode(b"clave-heredada-corta").decode()
         )
         assert [name for name, _ in validator.keys] == ["PASETO_SECRET_KEY"]
-        assert any("más débil de lo previsto" in r.message for r in caplog.records)
+        # El aviso tiene que nombrar la consecuencia real: no es solo pérdida
+        # de entropía, es que el emisor y el verificador derivan claves
+        # distintas y los tokens dejan de validar entre servicios.
+        assert any("ROMPE LA INTEROPERABILIDAD" in r.message for r in caplog.records)
 
 
 @pytest.mark.unit
