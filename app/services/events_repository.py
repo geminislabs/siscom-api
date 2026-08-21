@@ -7,10 +7,38 @@ import json
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import String, and_, asc, cast, desc, or_, select
+from sqlalchemy import String, and_, asc, cast, desc, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.scope_window import AccessWindow
 from app.models.events import Event, EventType
+
+
+def _unit_scope_filter(unit_ids: list[UUID], windows: dict | None):
+    """Filtro por unidad, acotado a la ventana temporal de cada una.
+
+    `occurred_at` sí lleva zona en esta tabla, así que los límites se comparan
+    tal cual, sin la conversión que necesitan las tablas de comunicaciones.
+
+    Un `or_()` vacío es verdadero en SQLAlchemy, así que la ausencia de
+    cláusulas devuelve `false()`: sin ventanas concedidas no se ve nada, no se
+    ve todo.
+    """
+    if windows is None:
+        return Event.unit_id.in_(unit_ids)
+
+    clauses = []
+    for unit_id in unit_ids:
+        window: AccessWindow = windows.get(str(unit_id), AccessWindow.none())
+        for interval in window.intervals:
+            conditions = [Event.unit_id == unit_id]
+            if interval.since is not None:
+                conditions.append(Event.occurred_at >= interval.since)
+            if interval.until is not None:
+                conditions.append(Event.occurred_at < interval.until)
+            clauses.append(and_(*conditions))
+
+    return or_(*clauses) if clauses else false()
 
 
 def encode_cursor(occurred_at: datetime, event_id: UUID) -> str:
@@ -63,6 +91,7 @@ async def get_events(  # noqa: PLR0913
     limit: int = 20,
     order: str = "desc",
     cursor: str | None = None,
+    windows: dict | None = None,
 ) -> tuple[list[dict], str | None]:
     """
     Obtiene eventos con paginación por keyset cursor.
@@ -75,6 +104,8 @@ async def get_events(  # noqa: PLR0913
         limit: cantidad de registros a retornar (default 20, max 200)
         order: 'desc' u 'asc' para ordenar por occurred_at
         cursor: cursor opaco para continuar desde un punto anterior
+        windows: ventana temporal concedida por unidad. `None` = sin
+            restricción temporal, el comportamiento anterior al contrato v1.3
 
     Returns:
         Tupla (eventos, next_cursor):
@@ -85,8 +116,10 @@ async def get_events(  # noqa: PLR0913
     is_desc = order.lower() == "desc"
 
     # Construir clausula WHERE base
+    # El rango pedido y la ventana concedida se intersectan en SQL: el
+    # resultado es el recorte, no un rechazo.
     where_clauses = [
-        Event.unit_id.in_(unit_ids),
+        _unit_scope_filter(unit_ids, windows),
         Event.occurred_at >= from_dt,
         Event.occurred_at <= to_dt,
     ]

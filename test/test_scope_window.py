@@ -154,7 +154,7 @@ class TestParsing:
 
     def test_an_object_with_an_open_window(self):
         parsed = parse_scope_value(
-            '{"id": "IMEI1", "w": [{"since": "2026-01-01T00:00:00+00:00"}]}'
+            '{"id":"IMEI1","windows":[{"from":"2026-01-01T00:00:00+00:00","to":null}]}'
         )
         assert parsed is not None
         internal_id, window = parsed
@@ -163,8 +163,8 @@ class TestParsing:
 
     def test_an_object_with_a_closed_window(self):
         parsed = parse_scope_value(
-            '{"id": "IMEI1", "w": [{"since": "2026-01-01T00:00:00+00:00",'
-            ' "until": "2026-01-10T00:00:00+00:00"}]}'
+            '{"id":"IMEI1","windows":[{"from":"2026-01-01T00:00:00+00:00",'
+            '"to":"2026-01-10T00:00:00+00:00"}]}'
         )
         assert parsed is not None
         _, window = parsed
@@ -173,9 +173,9 @@ class TestParsing:
 
     def test_multiple_intervals_survive_parsing(self):
         parsed = parse_scope_value(
-            '{"id": "IMEI1", "w": ['
-            '{"since": "2026-01-01T00:00:00+00:00", "until": "2026-01-10T00:00:00+00:00"},'
-            '{"since": "2026-01-20T00:00:00+00:00"}]}'
+            '{"id":"IMEI1","windows":['
+            '{"from":"2026-01-01T00:00:00+00:00","to":"2026-01-10T00:00:00+00:00"},'
+            '{"from":"2026-01-20T00:00:00+00:00","to":null}]}'
         )
         assert parsed is not None
         _, window = parsed
@@ -189,7 +189,7 @@ class TestParsing:
         Es la regla que NO debe relajarse al ajustar el formato: caer de vuelta
         a "sin límite" convertiría un alcance revocado en acceso ilimitado.
         """
-        parsed = parse_scope_value('{"id": "IMEI1", "w": []}')
+        parsed = parse_scope_value('{"id":"IMEI1","windows":[]}')
         assert parsed is not None
         _, window = parsed
         assert not window
@@ -198,7 +198,7 @@ class TestParsing:
     def test_naive_timestamps_are_treated_as_utc(self):
         """Sin zona, comparar reventaría con TypeError a mitad de petición."""
         parsed = parse_scope_value(
-            '{"id": "IMEI1", "w": [{"since": "2026-01-01T00:00:00"}]}'
+            '{"id":"IMEI1","windows":[{"from":"2026-01-01T00:00:00","to":null}]}'
         )
         assert parsed is not None
         _, window = parsed
@@ -206,13 +206,39 @@ class TestParsing:
 
     def test_malformed_json_denies_instead_of_falling_back(self):
         """Un error de codificación no debe convertirse en acceso ilimitado."""
-        assert parse_scope_value('{"id": "IMEI1", "w": [') is None
+        assert parse_scope_value('{"id":"IMEI1","windows":[') is None
 
     def test_a_bad_timestamp_denies(self):
-        assert parse_scope_value('{"id": "IMEI1", "w": [{"since": "ayer"}]}') is None
+        corrupto = '{"id":"IMEI1","windows":[{"from":"ayer","to":null}]}'
+        assert parse_scope_value(corrupto) is None
 
     def test_a_missing_id_denies(self):
-        assert parse_scope_value('{"w": []}') is None
+        assert parse_scope_value('{"windows":[]}') is None
+
+    def test_a_missing_windows_key_denies(self):
+        """`windows` está SIEMPRE presente: su ausencia es un valor corrupto."""
+        assert parse_scope_value('{"id":"IMEI1"}') is None
+
+    def test_both_bounds_null_means_unlimited(self):
+        """El caso explícito de "sin límite", distinto de la lista vacía."""
+        parsed = parse_scope_value('{"id":"IMEI1","windows":[{"from":null,"to":null}]}')
+        assert parsed is not None
+        _, window = parsed
+        assert window.allows_now()
+
+    def test_the_two_no_access_shapes_are_structurally_distinct(self):
+        """Lo que hace imposible confundir revocado con ilimitado.
+
+        `[]` y `[{"from":null,"to":null}]` no se parecen: no hay descuido de
+        parseo que lleve del uno al otro.
+        """
+        revocado = parse_scope_value('{"id":"IMEI1","windows":[]}')
+        ilimitado = parse_scope_value(
+            '{"id":"IMEI1","windows":[{"from":null,"to":null}]}'
+        )
+        assert revocado is not None and ilimitado is not None
+        assert not revocado[1].allows_now()
+        assert ilimitado[1].allows_now()
 
     def test_an_empty_value_denies(self):
         assert parse_scope_value("") is None

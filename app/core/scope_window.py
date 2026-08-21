@@ -148,30 +148,7 @@ class AccessWindow:
         return any(interval.contains(instant) for interval in self.intervals)
 
 
-# ── Punto de parseo — PROVISIONAL ───────────────────────────────────────────
-#
-# ⚠️  Esta es la ÚNICA función que depende de cómo admin-api codifica el valor
-# del hash de alcance. Cuando confirmen la forma exacta del contrato v1.3, se
-# cambia aquí y nada más: el modelo de intervalos, el recorte y los puntos de
-# aplicación no dependen de la codificación.
-#
-# Mientras tanto acepta dos formas, y la primera no es una suposición sino lo
-# que admin-api escribe HOY:
-#
-#   1. Cadena simple  →  "867564050638581"
-#      El identificador interno a secas, sin ventana. Se interpreta como acceso
-#      sin límite temporal, que es exactamente el comportamiento anterior a
-#      v1.3. Así el despliegue de este código no cambia nada por sí solo.
-#
-#   2. Objeto JSON  →  {"id": "867564050638581",
-#                       "w": [{"since": "...", "until": "..."}, ...]}
-#      Con `until` ausente o nulo para la asignación viva. Es una forma
-#      plausible, NO acordada: si admin-api elige otra, se ajusta aquí.
-#
-# Lo que NO es provisional y no debe relajarse al ajustar el formato: un valor
-# que se reconoce como v1.3 pero cuya lista de ventanas está vacía concede
-# CERO acceso. La ausencia de ventanas es un alcance revocado, no un alcance
-# sin restricciones.
+# ── Decodificación del valor del hash ───────────────────────────────────────
 
 
 def _parse_instant(raw) -> datetime | None:
@@ -186,33 +163,68 @@ def _parse_instant(raw) -> datetime | None:
 def parse_scope_value(raw: str) -> tuple[str, AccessWindow] | None:
     """Traduce el valor del hash a `(id_interno, ventana)`.
 
+    Forma confirmada por siscom-admin-api (contrato v1.3). Cada campo del hash
+    es un JSON compacto::
+
+        {"id": "864537040123456",
+         "windows": [{"from": "2026-01-01T00:00:00+00:00",
+                      "to":   "2026-03-01T00:00:00+00:00"},
+                     {"from": "2026-06-01T00:00:00+00:00",
+                      "to":   null}]}
+
+    - ``id``: identificador interno — `device_id` (IMEI) en `:dev`, `unit_id`
+      como cadena en `:unit`.
+    - ``windows``: lista SIEMPRE presente, ya ordenada y con intervalos
+      disjuntos. Las solapadas se fusionan en origen, así que no se normaliza
+      al leer.
+    - ``from`` / ``to``: ISO 8601 con zona, o nulo para "sin límite por ese
+      lado". Un ``to`` nulo es ventana abierta, y es lo único que autoriza
+      datos en vivo.
+    - Intervalo semiabierto ``[from, to)``, como el resto de rangos de la API.
+
+    Los tres casos que importan son ``[{"from": null, "to": null}]`` (sin
+    límite, en vivo autorizado), una ventana con ``to`` puesto (histórico
+    acotado, en vivo denegado) y ``[]`` (revocado, cero acceso).
+
+    La distinción entre los dos últimos es **estructural**: "sin ventanas" es
+    una lista vacía y "sin límite" es un objeto explícito con dos nulos. Un
+    parser no puede confundirlos ni por descuido, que es justo lo que protege
+    contra el fallo del ``or`` descrito en `AccessWindow.none()`.
+
+    Se sigue aceptando el identificador a secas, sin JSON, porque es lo que
+    había antes de v1.3: un valor sin migrar se comporta como siempre en vez de
+    denegar de golpe.
+
     Returns:
-        La pareja, o `None` si el valor no es interpretable — que se trata como
-        denegación, igual que un campo ausente.
+        La pareja, o ``None`` si el valor no es interpretable — que se trata
+        como denegación, igual que un campo ausente. Nunca cae de vuelta a "sin
+        límite": eso convertiría un error de codificación del emisor en acceso
+        ilimitado del verificador.
     """
     if not raw:
         return None
 
     stripped = raw.strip()
 
-    # Forma 1: identificador a secas.
+    # Forma anterior a v1.3: identificador a secas, sin límite temporal.
     if not stripped.startswith("{"):
         return stripped, AccessWindow.always()
 
-    # Forma 2: objeto con ventanas.
     try:
         payload = json.loads(stripped)
         internal_id = payload["id"]
-        if not internal_id:
+        if not internal_id or not isinstance(internal_id, str):
+            return None
+
+        raw_windows = payload["windows"]
+        if not isinstance(raw_windows, list):
             return None
 
         intervals = tuple(
-            Interval(_parse_instant(w.get("since")), _parse_instant(w.get("until")))
-            for w in payload.get("w", [])
+            Interval(_parse_instant(w.get("from")), _parse_instant(w.get("to")))
+            for w in raw_windows
         )
     except Exception:
-        # Un valor malformado deniega. No se cae de vuelta a "sin ventana":
-        # eso convertiría un error de codificación en acceso ilimitado.
         return None
 
     return internal_id, AccessWindow(intervals)

@@ -6,9 +6,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import require_data_token
+from app.api.deps import internal_ids, require_data_token, windows_for_request
 from app.core.database import get_db
 from app.schemas.events import EventsPageResponse
 from app.services.events_repository import get_events
@@ -20,6 +20,7 @@ router = APIRouter(
 
 @router.get("/events", response_model=EventsPageResponse)
 async def get_events_handler(  # noqa: PLR0913
+    request: Request,
     unit_id: list[UUID] = Query(
         ...,
         description="Lista de UUIDs de unidades a filtrar",
@@ -84,12 +85,15 @@ async def get_events_handler(  # noqa: PLR0913
     try:
         events, next_cursor = await get_events(
             db,
-            unit_ids=unit_id,
+            unit_ids=[
+                UUID(u) for u in internal_ids(request, [str(u) for u in unit_id])
+            ],
             from_dt=from_dt,
             to_dt=to_dt,
             limit=limit,
             order=order,
             cursor=cursor,
+            windows=windows_for_request(request),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

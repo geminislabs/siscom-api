@@ -7,6 +7,7 @@ from app.api.deps import (
     live_internal_ids,
     require_data_token,
     to_external_models,
+    windows_for_request,
 )
 from app.core.database import get_db
 from app.schemas.communications import (
@@ -59,7 +60,14 @@ async def get_communications_history(  # noqa: B008
     **Returns:**
     - Lista de comunicaciones de los dispositivos especificados
     """
-    results = await get_communications(db, internal_ids(request, device_ids))
+    # El histórico se recorta a la ventana de cada dispositivo dentro de la
+    # consulta: un equipo reasignado conserva su periodo, no el del dueño
+    # siguiente.
+    results = await get_communications(
+        db,
+        internal_ids(request, device_ids),
+        windows=windows_for_request(request),
+    )
     return to_external_models(
         request, [CommunicationResponse.model_validate(r) for r in results]
     )
@@ -103,7 +111,10 @@ async def get_device_communications(
     - Con filtro de fecha: Lista con TODOS los campos (CommunicationFullResponse)
     """
     results = await get_communications(
-        db, internal_ids(request, [device_id]), received_at=received_at
+        db,
+        internal_ids(request, [device_id]),
+        received_at=received_at,
+        windows=windows_for_request(request),
     )
 
     # Si hay filtro de fecha, devolver respuesta completa

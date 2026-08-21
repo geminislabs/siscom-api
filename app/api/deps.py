@@ -376,6 +376,19 @@ def live_internal_ids(request: Request, refs: list[str]) -> list[str]:
     ]
 
 
+def windows_for_request(request: Request) -> dict | None:
+    """Ventanas por identificador interno, para acotar la consulta.
+
+    `None` significa "sin restricción temporal" y deja la consulta como estaba
+    antes del contrato v1.3. Es lo que devuelve en modo observación, así que
+    activar la exigencia es el único cambio de comportamiento.
+    """
+    translation = translation_of(request)
+    if not translation:
+        return None
+    return dict(translation.window_by_id)
+
+
 def to_external_models(request: Request, models: list) -> list:
     """Devuelve los modelos con `device_id` traducido al espacio externo.
 

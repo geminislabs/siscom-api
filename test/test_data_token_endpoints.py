@@ -448,7 +448,7 @@ class TestReassignedDeviceWindows:
         """Conservar el histórico del periodo propio es intencional."""
         consultados = []
 
-        async def spy(session, device_ids, received_at=None):
+        async def spy(session, device_ids, received_at=None, windows=None):
             consultados.append(list(device_ids))
             return []
 
