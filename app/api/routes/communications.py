@@ -1,7 +1,8 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.api.deps import internal_ids, require_data_token, to_external_models
 from app.core.database import get_db
 from app.schemas.communications import (
     CommunicationFullResponse,
@@ -10,7 +11,14 @@ from app.schemas.communications import (
 )
 from app.services.repository import get_communications, get_latest_communications
 
-router = APIRouter(prefix="/api/v1", tags=["Communications"])
+# La verificación va a nivel de router: cubre los cuatro endpoints sin tocar
+# ninguna firma, y un endpoint nuevo queda protegido por omisión en vez de por
+# acordarse de añadir la dependencia.
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["Communications"],
+    dependencies=[Depends(require_data_token)],
+)
 
 
 # ============================================================================
@@ -20,6 +28,7 @@ router = APIRouter(prefix="/api/v1", tags=["Communications"])
 
 @router.get("/communications", response_model=list[CommunicationResponse])
 async def get_communications_history(  # noqa: B008
+    request: Request,
     device_ids: list[str] = Query(
         ...,
         description="Lista de IDs de dispositivos GPS a consultar",
@@ -45,7 +54,10 @@ async def get_communications_history(  # noqa: B008
     **Returns:**
     - Lista de comunicaciones de los dispositivos especificados
     """
-    return await get_communications(db, device_ids)
+    results = await get_communications(db, internal_ids(request, device_ids))
+    return to_external_models(
+        request, [CommunicationResponse.model_validate(r) for r in results]
+    )
 
 
 @router.get(
@@ -53,6 +65,7 @@ async def get_communications_history(  # noqa: B008
     response_model=list[CommunicationFullResponse] | list[CommunicationResponse],
 )
 async def get_device_communications(
+    request: Request,
     device_id: str,
     received_at: date | None = Query(
         None,
@@ -84,14 +97,20 @@ async def get_device_communications(
     - Sin filtro de fecha: Lista con campos básicos (CommunicationResponse)
     - Con filtro de fecha: Lista con TODOS los campos (CommunicationFullResponse)
     """
-    results = await get_communications(db, [device_id], received_at=received_at)
+    results = await get_communications(
+        db, internal_ids(request, [device_id]), received_at=received_at
+    )
 
     # Si hay filtro de fecha, devolver respuesta completa
     if received_at is not None:
-        return [CommunicationFullResponse.model_validate(r) for r in results]
+        return to_external_models(
+            request, [CommunicationFullResponse.model_validate(r) for r in results]
+        )
 
     # Sin filtro, devolver respuesta básica (comportamiento original)
-    return [CommunicationResponse.model_validate(r) for r in results]
+    return to_external_models(
+        request, [CommunicationResponse.model_validate(r) for r in results]
+    )
 
 
 # ============================================================================
@@ -101,6 +120,7 @@ async def get_device_communications(
 
 @router.get("/communications/latest", response_model=list[CommunicationLatestResponse])
 async def get_latest_communications_endpoint(  # noqa: B008
+    request: Request,
     device_ids: list[str] = Query(
         ...,
         description="Lista de IDs de dispositivos GPS a consultar",
@@ -134,7 +154,10 @@ async def get_latest_communications_endpoint(  # noqa: B008
     **Returns:**
     - Lista con la última comunicación de cada dispositivo especificado
     """
-    return await get_latest_communications(db, device_ids)
+    results = await get_latest_communications(db, internal_ids(request, device_ids))
+    return to_external_models(
+        request, [CommunicationLatestResponse.model_validate(r) for r in results]
+    )
 
 
 @router.get(
@@ -142,6 +165,7 @@ async def get_latest_communications_endpoint(  # noqa: B008
     response_model=CommunicationLatestResponse,
 )
 async def get_device_latest_communication(  # noqa: B008
+    request: Request,
     device_id: str,
     class_: str = Query(
         "STATUS",
@@ -180,7 +204,9 @@ async def get_device_latest_communication(  # noqa: B008
     - Última comunicación del dispositivo especificado
     - Error 404 si el dispositivo no existe o no tiene comunicaciones
     """
-    result = await get_latest_communications(db, [device_id], msg_class=class_)
+    result = await get_latest_communications(
+        db, internal_ids(request, [device_id]), msg_class=class_
+    )
 
     if not result:
         raise HTTPException(
@@ -188,4 +214,6 @@ async def get_device_latest_communication(  # noqa: B008
             detail=f"No se encontró comunicación para el dispositivo {device_id}",
         )
 
-    return result[0]
+    return to_external_models(
+        request, [CommunicationLatestResponse.model_validate(result[0])]
+    )[0]

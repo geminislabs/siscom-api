@@ -133,3 +133,23 @@ class TestKeyConfiguration:
         )
         assert [name for name, _ in validator.keys] == ["PASETO_SECRET_KEY"]
         assert any("más débil de lo previsto" in r.message for r in caplog.records)
+
+
+@pytest.mark.unit
+class TestZeroKeyRejection:
+    """La clave de ceros del .env.example es pública, no solo débil."""
+
+    ZEROS = base64.b64encode(b"\x00" * 32).decode()
+
+    def test_zero_new_key_is_a_startup_error(self, configure_keys):
+        with pytest.raises(RuntimeError, match="clave de ceros"):
+            configure_keys(new=self.ZEROS, legacy="")
+
+    def test_zero_legacy_key_is_logged_as_an_incident(self, configure_keys, caplog):
+        """No es fatal: tumbar producción al arrancar sería peor que avisar."""
+        import logging
+
+        with caplog.at_level(logging.CRITICAL):
+            configure_keys(new="", legacy=self.ZEROS)
+        assert any(r.levelno == logging.CRITICAL for r in caplog.records)
+        assert any("clave PÚBLICA" in r.message for r in caplog.records)

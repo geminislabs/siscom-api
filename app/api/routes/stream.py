@@ -4,6 +4,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.api.deps import RefTranslation, authorize_websocket, translate_ws_message
 from app.core.config import settings
 from app.services.kafka_client import kafka_client
 from app.utils.metrics import metrics_client
@@ -254,7 +255,9 @@ async def create_keepalive_task(
 
 
 async def process_websocket_messages(
-    websocket: WebSocket, queues: list[asyncio.Queue]
+    websocket: WebSocket,
+    queues: list[asyncio.Queue],
+    translation: RefTranslation | None = None,
 ) -> None:
     """Consume la cola del socket y envía eventos al cliente.
 
@@ -318,6 +321,8 @@ async def process_websocket_messages(
                         if isinstance(event, dict)
                         else "message"
                     )
+                    if translation is not None:
+                        event = translate_ws_message(event, translation)
                     await websocket.send_json({"event": event_name, "data": event})
                 except Exception as send_error:
                     logger.warning(
@@ -359,11 +364,24 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
     try:
         # Validar ANTES de aceptar: una conexión que no supera la validación
         # nunca llega a establecerse.
-        device_list = await validate_device_ids(websocket, device_ids)
+        requested_refs = await validate_device_ids(websocket, device_ids)
 
-        await websocket.accept()
+        # Autorizar también antes de aceptar. `subprotocol` hay que devolverlo
+        # en el accept: si el cliente ofreció uno y el servidor no hace eco, el
+        # navegador cierra la conexión nada más abrirla.
+        authorized, subprotocol, translation = await authorize_websocket(
+            websocket, requested_refs
+        )
+        if not authorized:
+            raise WebSocketDisconnect(code=1008, reason="Not authorized")
+
+        await websocket.accept(subprotocol=subprotocol)
         await metrics_client.increment_active_connections()
 
+        # El broker se indexa por identificador interno, que es con lo que
+        # llegan los mensajes de Kafka. Las tramas de salida se traducen de
+        # vuelta a referencias en `process_websocket_messages`.
+        device_list = [translation.id_by_ref.get(ref, ref) for ref in requested_refs]
         queues = await ws_broker.subscribe(device_list)
 
         logger.info(
@@ -375,7 +393,7 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
         connection_active.set()
 
         keepalive_task = await create_keepalive_task(websocket, connection_active)
-        await process_websocket_messages(websocket, queues)
+        await process_websocket_messages(websocket, queues, translation)
 
     except WebSocketDisconnect as disconnect_error:
         logger.info(

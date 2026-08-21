@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.database import engine
 from app.core.middleware import MetricsMiddleware
 from app.services.kafka_client import kafka_client
+from app.services.scope_store import scope_store
 from app.utils.metrics import metrics_client
 
 # Configurar logging
@@ -98,6 +99,10 @@ async def lifespan(_app: FastAPI):
 
     # Shutdown: Cerrar cliente de métricas
     await metrics_client.close()
+
+    # Shutdown: Cerrar cliente de Valkey
+    with contextlib.suppress(Exception):
+        await scope_store.close()
 
 
 app = FastAPI(

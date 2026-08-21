@@ -8,11 +8,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.deps import require_data_token
 from app.core.database import get_db
 from app.schemas.events import EventsPageResponse
 from app.services.events_repository import get_events
 
-router = APIRouter(prefix="/api/v1", tags=["Events"])
+router = APIRouter(
+    prefix="/api/v1", tags=["Events"], dependencies=[Depends(require_data_token)]
+)
 
 
 @router.get("/events", response_model=EventsPageResponse)

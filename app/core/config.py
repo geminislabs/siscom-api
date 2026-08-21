@@ -48,6 +48,50 @@ class Settings(BaseSettings):
     # las credenciales (ver app/main.py).
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
+    # ── Data token (plano de datos multi-tenant) ────────────────────────────
+    #
+    # Nomenclatura: NINGUNA variable nueva se llama PASETO_*, para que no se
+    # mezclen con las claves de compartir ubicación. Son sistemas distintos:
+    # compartir ubicación usa v4.local (simétrico); el data token usa
+    # v4.public (Ed25519, solo verificación).
+    #
+    # Interruptor de exigencia. Con False se verifica y se registra, pero no se
+    # rechaza: permite desplegar y observar antes de romper a los clientes que
+    # aún no mandan token.
+    DATA_TOKEN_ENFORCED: bool = False
+
+    # Clave pública Ed25519 del emisor (siscom-admin-api), en base64 del PEM
+    # en una sola línea. Este servicio SOLO verifica: nunca firma.
+    DATA_TOKEN_PUBLIC_KEY_B64: str = ""
+
+    # `kid` esperado en el footer del token. Vacío = no se comprueba.
+    DATA_TOKEN_KEY_ID: str = ""
+
+    # Audiencia esperada.
+    DATA_TOKEN_AUDIENCE: str = "siscom-api"
+
+    # Marcador de subprotocolo del handshake WebSocket. El cliente ofrece
+    # `Sec-WebSocket-Protocol: <marcador>, <token>`; el servidor hace eco del
+    # marcador (nunca del token) al aceptar.
+    DATA_TOKEN_WS_SUBPROTOCOL: str = "siscom.data-token.v1"
+
+    # Marcadores adicionales aceptados, separados por comas. Permite renombrar
+    # el marcador sin desplegar clientes y servidor en el mismo instante. El eco
+    # devuelve siempre el que el cliente ofreció.
+    DATA_TOKEN_WS_SUBPROTOCOL_ALIASES: str = "nexus.data-token"
+
+    # ── Valkey (resolución de scope_ref → refs autorizados) ─────────────────
+    #
+    # Este servicio solo LEE `dt:scope:*`. El índice inverso `dt:owner:*` de
+    # admin-api queda fuera de su alcance por diseño y por ACL.
+    VALKEY_URL: str = ""
+    VALKEY_TIMEOUT_SECS: float = 0.25
+
+    # Techo de la caché en proceso de pertenencia a scope. La vida efectiva de
+    # cada entrada es min(este valor, exp del token − ahora), para no exceder
+    # nunca la vigencia del propio token.
+    SCOPE_CACHE_TTL_SECS: int = 30
+
     # Documentación interactiva (/api/docs, /api/redoc, /api/openapi.json).
     # Deshabilitada por defecto: publica el mapa completo de la API sin
     # autenticación. Habilitar solo en entornos de desarrollo.

@@ -89,6 +89,19 @@ class PasetoValidator:
             except Exception as e:
                 raise RuntimeError(f"Invalid {name} format: {e}") from e
 
+            # La clave de ceros es el marcador de posición que arrastran los
+            # `.env.example`. No es débil: es pública. Comprobar solo la
+            # longitud la dejaría pasar, porque 32 bytes de ceros miden 32.
+            if key_bytes and not any(key_bytes):
+                message = f"{name} es la clave de ceros del .env.example"
+                if strict:
+                    raise RuntimeError(message)
+                logger.critical(
+                    f"🚨 {message}. Es una clave PÚBLICA: cualquiera puede "
+                    "emitir tokens válidos. Trátalo como incidente, no como "
+                    "aviso de configuración."
+                )
+
             if len(key_bytes) != _V4_LOCAL_KEY_BYTES:
                 message = (
                     f"{name}: PASETO v4.local requiere {_V4_LOCAL_KEY_BYTES} "
