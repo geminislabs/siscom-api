@@ -103,9 +103,9 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if settings.ENABLE_API_DOCS else None,
+    redoc_url="/api/redoc" if settings.ENABLE_API_DOCS else None,
+    openapi_url="/api/openapi.json" if settings.ENABLE_API_DOCS else None,
     lifespan=lifespan,
 )
 
@@ -113,12 +113,28 @@ app = FastAPI(
 app.add_middleware(MetricsMiddleware)
 
 # Configurar CORS
+#
+# `allow_credentials=True` junto a un origen comodín es una combinación
+# insegura: Starlette responde el origen explícito en el preflight, con lo que
+# CUALQUIER sitio pasa la comprobación previa contra todos los endpoints. Por
+# eso las credenciales solo se habilitan cuando hay una lista explícita de
+# orígenes; con "*" se degradan a peticiones sin credenciales.
+_allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
+_allow_all_origins = "*" in _allowed_origins
+
+if _allow_all_origins:
+    logging.warning(
+        "⚠️  ALLOWED_ORIGINS='*': CORS abierto a cualquier origen y credenciales "
+        "deshabilitadas. Configura la lista de orígenes en producción."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS.split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_allowed_origins,
+    allow_credentials=not _allow_all_origins,
+    # Toda la superficie de la API es de solo lectura (GET).
+    allow_methods=["GET"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

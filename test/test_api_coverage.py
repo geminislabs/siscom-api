@@ -38,17 +38,23 @@ class TestMainAppCoverage:
         paths = collect_paths(app.routes)
         assert any("/health" in path for path in paths)
 
-    def test_openapi_url_is_set(self, client: TestClient):
-        """Test: OpenAPI URL está configurada."""
+    def test_docs_disabled_unless_explicitly_enabled(self, client: TestClient):
+        """Test: la documentación interactiva sigue el flag ENABLE_API_DOCS.
+
+        Por defecto está deshabilitada: publicaba el mapa completo de la API
+        sin autenticación.
+        """
+        from app.core.config import settings
         from app.main import app
 
-        assert app.openapi_url is not None
-
-    def test_docs_url_is_set(self, client: TestClient):
-        """Test: Docs URL está configurada."""
-        from app.main import app
-
-        assert app.docs_url is not None
+        if settings.ENABLE_API_DOCS:
+            assert app.openapi_url == "/api/openapi.json"
+            assert app.docs_url == "/api/docs"
+        else:
+            assert app.openapi_url is None
+            assert app.docs_url is None
+            assert client.get("/api/docs").status_code == 404
+            assert client.get("/api/openapi.json").status_code == 404
 
 
 class TestHealthEndpointExtended:

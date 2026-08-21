@@ -26,11 +26,32 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
-    # Seguridad PASETO
+    # Seguridad PASETO — tokens de compartir ubicación (v4.local)
+    #
+    # SHARE_LOCATION_KEY_B64 es la clave dedicada y la única que este servicio
+    # debe conservar a medio plazo.
+    #
+    # PASETO_SECRET_KEY es la clave HEREDADA, compartida con siscom-admin-api,
+    # que además firma sus tokens de servicio `internal-*`. Mientras esté
+    # presente aquí, este servicio puede emitir tokens administrativos de
+    # admin-api. Se acepta SOLO durante la ventana de transición.
+    #
+    # ► Paso final de la migración: vaciar/eliminar PASETO_SECRET_KEY del
+    #   entorno. El validador pasa a aceptar únicamente la clave dedicada sin
+    #   ningún cambio de código.
+    SHARE_LOCATION_KEY_B64: str = ""
     PASETO_SECRET_KEY: str = ""
 
     # CORS
-    ALLOWED_ORIGINS: str = "*"
+    # Lista separada por comas. El default cubre solo orígenes de desarrollo
+    # local: en producción DEBE configurarse explícitamente. Usar "*" deshabilita
+    # las credenciales (ver app/main.py).
+    ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+
+    # Documentación interactiva (/api/docs, /api/redoc, /api/openapi.json).
+    # Deshabilitada por defecto: publica el mapa completo de la API sin
+    # autenticación. Habilitar solo en entornos de desarrollo.
+    ENABLE_API_DOCS: bool = False
 
     # Métricas StatsD
     STATSD_ENABLED: bool = False  # Cambiar a True cuando tengas StatsD corriendo

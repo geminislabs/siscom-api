@@ -207,26 +207,20 @@ def start_kafka_broker_bridge():
 async def validate_device_ids(
     websocket: WebSocket, device_ids: str | None
 ) -> list[str]:
-    """Valida y parsea los device_ids del query parameter."""
+    """Valida y parsea los device_ids del query parameter.
+
+    Se ejecuta ANTES de `websocket.accept()`, así que un rechazo cierra el
+    handshake sin llegar a establecer la conexión (mismo patrón que
+    `app/api/routes/public.py`). Como contrapartida no se puede enviar un
+    payload de error al cliente: el navegador solo ve el fallo de handshake.
+    """
     raw_list = device_ids.split(",") if device_ids else []
     device_list = [d.strip() for d in raw_list if d and d.strip()]
 
     if not device_list:
         logger.warning("WebSocket rechazado: no se especificaron device_ids")
-        try:
-            await websocket.send_json(
-                {
-                    "event": "error",
-                    "data": {
-                        "message": "Debe especificar al menos un device_id en los query params",
-                        "example": "?device_ids=867564050638581,867564050638582",
-                    },
-                }
-            )
-        except Exception as e:
-            logger.debug(f"Error al enviar mensaje de error al cliente: {e}")
-
-        await websocket.close(code=1008)
+        with suppress(Exception):
+            await websocket.close(code=1008)
         raise WebSocketDisconnect(code=1008, reason="Missing device_ids")
 
     return list(dict.fromkeys(device_list))
@@ -362,11 +356,14 @@ async def cleanup_websocket_connection(
 @router.websocket("/stream")
 async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
     """Endpoint WebSocket para recibir eventos de dispositivos en tiempo real."""
-    await websocket.accept()
-    await metrics_client.increment_active_connections()
-
     try:
+        # Validar ANTES de aceptar: una conexión que no supera la validación
+        # nunca llega a establecerse.
         device_list = await validate_device_ids(websocket, device_ids)
+
+        await websocket.accept()
+        await metrics_client.increment_active_connections()
+
         queues = await ws_broker.subscribe(device_list)
 
         logger.info(
@@ -410,7 +407,8 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
             await websocket.close()
 
 
-@router.get("/stream/stats")
-async def get_broker_stats():
-    """Obtiene estadísticas en tiempo real del WebSocket manager."""
-    return ws_broker.get_stats()
+# NOTA: `GET /api/v1/stream/stats` se retiró de la superficie pública en la
+# Fase 1 de aislamiento: exponía telemetría operativa (suscriptores activos,
+# devices monitorizados, mensajes descartados) sin autenticación y sin cliente
+# conocido. `WebSocketManager.get_stats()` sigue disponible para métricas
+# internas; si vuelve a hacer falta por HTTP, debe ir autenticado.
