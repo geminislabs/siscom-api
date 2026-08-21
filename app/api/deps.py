@@ -417,13 +417,21 @@ class ShareGrant:
         self.expires_at = expires_at
         self.legacy = legacy
 
+        # Se fija al conceder, no por trama: el alcance de una conexión no
+        # cambia mientras el token siga vivo, así que resolverlo una vez en el
+        # handshake evita ir a Valkey por cada posición del stream. La
+        # contrapartida es que "dejar de compartir" no corta las conexiones ya
+        # abiertas; el techo de esa latencia es el `exp`, porque el keep-alive
+        # cierra el socket al vencer (ver `_send_keepalive` en public.py).
+        self._translation = RefTranslation()
+        if not legacy:
+            # En el formato heredado no hay espacio de referencias que traducir.
+            self._translation.add(device_ref, device_id)
+
     @property
     def translation(self) -> RefTranslation:
         """Traducción para las tramas de salida del WebSocket público."""
-        translation = RefTranslation()
-        if not self.legacy:
-            translation.add(self.device_ref, self.device_id)
-        return translation
+        return self._translation
 
 
 async def resolve_share_token(token: str) -> ShareGrant:
