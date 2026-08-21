@@ -1,4 +1,4 @@
-.PHONY: help install lint format format-check test test-cov build run run-dev stop clean deploy-test validate scan-secrets audit-deps scan-osv all-checks health logs shell db-shell dev docker-build docker-up docker-down
+.PHONY: help install lint check-http-errors format format-check test test-cov build run run-dev stop clean deploy-test validate scan-secrets audit-deps scan-osv all-checks health logs shell db-shell dev docker-build docker-up docker-down
 
 help:  ## Muestra esta ayuda
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -67,7 +67,10 @@ shell:  ## Abre una shell en el contenedor
 db-shell:  ## Abre una shell de PostgreSQL (docker-compose.test.yml)
 	docker exec -it siscom-api-test-db psql -U test -d siscom_test
 
-all-checks: format-check lint test  ## Ejecuta todas las verificaciones (formato, lint, tests)
+check-http-errors:  ## Detecta códigos HTTP deliberados aplanados por un except amplio
+	python scripts/check_flattened_http_errors.py app
+
+all-checks: format-check lint check-http-errors test  ## Ejecuta todas las verificaciones (formato, lint, tests)
 	@echo "✅ Todas las verificaciones pasaron correctamente"
 
 validate: format-check lint test build  ## Pipeline local equivalente a CI quality
