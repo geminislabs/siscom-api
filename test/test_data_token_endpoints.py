@@ -285,3 +285,75 @@ class TestDegradedStates:
             headers={"Authorization": f"Bearer {_token()}"},
         )
         assert response.status_code >= 400
+
+
+@pytest.mark.unit
+class TestBroadHandlersDoNotFlattenStatusCodes:
+    """Un `except Exception` amplio no debe aplanar un código deliberado.
+
+    `/init` envuelve todo su cuerpo en un `except Exception` que devuelve 500.
+    Sin re-lanzar antes las `HTTPException`, cualquier código elegido a
+    conciencia más arriba —un 503 de "base de datos caída"— salía como 500 y
+    volvía a mentir sobre qué hacer al respecto.
+    """
+
+    @pytest.fixture
+    def share_link(self, monkeypatch, enforced):
+        """Enlace compartido válido, con el alcance ya resuelto."""
+
+        class _Store:
+            async def resolve_single(self, *args, **kwargs):
+                return (_REF, _IMEI)
+
+        monkeypatch.setattr("app.api.deps.scope_store", _Store())
+        monkeypatch.setattr(
+            "app.api.deps.settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN", False
+        )
+        return f"/api/v1/public/share-location/init?token={_token()}"
+
+    def test_database_outage_is_503_not_500(
+        self, client: TestClient, share_link, monkeypatch
+    ):
+        async def boom(*args, **kwargs):
+            raise RuntimeError("base de datos caída")
+
+        monkeypatch.setattr("app.api.routes.public.get_latest_communications", boom)
+
+        response = client.get(share_link)
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Location data temporarily unavailable"
+
+    def test_database_outage_is_not_reported_as_a_valid_empty_link(
+        self, client: TestClient, share_link, monkeypatch
+    ):
+        """Antes devolvía 200 "valid" con ubicación nula.
+
+        Eso es indistinguible de un dispositivo que nunca ha reportado: quien
+        abre el enlace ve un mapa vacío y concluye que el rastreador está roto.
+        """
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("base de datos caída")
+
+        monkeypatch.setattr("app.api.routes.public.get_latest_communications", boom)
+
+        response = client.get(share_link)
+        assert response.status_code != 200
+        assert "valid" not in response.text
+
+    def test_a_device_with_no_data_yet_is_still_a_valid_200(
+        self, client: TestClient, share_link, monkeypatch
+    ):
+        """El 503 no se come el caso legítimo de "todavía sin posición"."""
+
+        async def empty(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr("app.api.routes.public.get_latest_communications", empty)
+
+        response = client.get(share_link)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["msg"] == "valid"
+        assert body["last_communication"] is None
+        assert body["device_id"] == _REF

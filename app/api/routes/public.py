@@ -151,14 +151,16 @@ async def init_share_location(
                 }
 
             except Exception as db_error:
+                # 503, no un 200 con ubicación nula. Devolver "valid" sin datos
+                # es indistinguible de un dispositivo que nunca ha reportado:
+                # quien abre el enlace ve un mapa vacío, concluye que el
+                # rastreador no funciona, y el cliente no tiene forma de saber
+                # que reintentar sirve. Un corte de base de datos es nuestro,
+                # y hay que decirlo.
                 logger.error(f"Error al obtener comunicación: {db_error}")
-                # Token válido pero error al obtener datos
-                return {
-                    "msg": "valid",
-                    "expires_at": expires_at,
-                    "device_id": grant.device_ref,
-                    "last_communication": None,
-                }
+                raise HTTPException(
+                    status_code=503, detail="Location data temporarily unavailable"
+                ) from None
 
     except ShareStoreUnavailable as e:
         # 503, no 403: el enlace puede ser perfectamente válido; lo que falla
@@ -176,6 +178,13 @@ async def init_share_location(
     except ShareTokenInvalid as e:
         logger.warning(f"Intento de acceso con token inválido: {str(e)}")
         raise HTTPException(status_code=403, detail="Invalid token") from None
+
+    except HTTPException:
+        # Los códigos deliberados se propagan tal cual. El `except Exception`
+        # de abajo existe para lo imprevisto, no para aplanar una decisión ya
+        # tomada más arriba: sin esto, el 503 de "base de datos caída" salía
+        # como 500 y volvía a mentir sobre qué hacer al respecto.
+        raise
 
     except Exception as e:
         logger.error(f"Error inesperado al validar token: {str(e)}")
