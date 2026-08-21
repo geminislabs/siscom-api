@@ -7,6 +7,7 @@ denegar, nunca permitir. Un fallo abierto en este punto expone la flota ajena.
 
 import pytest
 
+from app.core.scope_window import AccessWindow
 from app.services.scope_store import ScopeStore, ScopeStoreUnavailable
 
 
@@ -42,7 +43,8 @@ def store(monkeypatch):
 class TestResolution:
     async def test_resolves_a_granted_ref_to_its_internal_id(self, store):
         instance, _ = store({"dt:scope:s1:dev": {"ref-a": "867564050638581"}})
-        assert await instance.resolve("s1", "dev", "ref-a", 30) == "867564050638581"
+        resolved = await instance.resolve("s1", "dev", "ref-a", 30)
+        assert resolved == ("867564050638581", AccessWindow.always())
 
     async def test_uses_hget_not_hgetall(self, store):
         """Una flota grande no se trae entera para resolver un dispositivo."""
@@ -52,7 +54,8 @@ class TestResolution:
 
     async def test_devices_and_units_are_separate_keys(self, store):
         instance, fake = store({"dt:scope:s1:unit": {"u-1": "uuid-1"}})
-        assert await instance.resolve("s1", "unit", "u-1", 30) == "uuid-1"
+        resolved = await instance.resolve("s1", "unit", "u-1", 30)
+        assert resolved is not None and resolved[0] == "uuid-1"
         assert fake.calls[0][0] == "dt:scope:s1:unit"
 
     async def test_a_scope_cannot_reach_another_scopes_refs(self, store):
@@ -151,6 +154,8 @@ class TestCaching:
                 "dt:scope:s2:dev": {"ref-a": "imei-2"},
             }
         )
-        assert await instance.resolve("s1", "dev", "ref-a", 30) == "imei-1"
-        assert await instance.resolve("s2", "dev", "ref-a", 30) == "imei-2"
+        first = await instance.resolve("s1", "dev", "ref-a", 30)
+        second = await instance.resolve("s2", "dev", "ref-a", 30)
+        assert first is not None and first[0] == "imei-1"
+        assert second is not None and second[0] == "imei-2"
         assert len(fake.calls) == 2

@@ -2,7 +2,12 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import internal_ids, require_data_token, to_external_models
+from app.api.deps import (
+    internal_ids,
+    live_internal_ids,
+    require_data_token,
+    to_external_models,
+)
 from app.core.database import get_db
 from app.schemas.communications import (
     CommunicationFullResponse,
@@ -154,7 +159,12 @@ async def get_latest_communications_endpoint(  # noqa: B008
     **Returns:**
     - Lista con la última comunicación de cada dispositivo especificado
     """
-    results = await get_latest_communications(db, internal_ids(request, device_ids))
+    # `latest` es tiempo presente: solo los equipos con asignación viva. Uno
+    # reasignado conserva su histórico, pero su posición actual ya no es de su
+    # dueño anterior.
+    results = await get_latest_communications(
+        db, live_internal_ids(request, device_ids)
+    )
     return to_external_models(
         request, [CommunicationLatestResponse.model_validate(r) for r in results]
     )
@@ -205,7 +215,7 @@ async def get_device_latest_communication(  # noqa: B008
     - Error 404 si el dispositivo no existe o no tiene comunicaciones
     """
     result = await get_latest_communications(
-        db, internal_ids(request, [device_id]), msg_class=class_
+        db, live_internal_ids(request, [device_id]), msg_class=class_
     )
 
     if not result:

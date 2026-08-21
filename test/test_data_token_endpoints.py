@@ -55,11 +55,15 @@ def _token(**overrides) -> str:
 class _FakeScopeStore:
     """Solo `ref-opaca-a` está concedida, y resuelve al IMEI."""
 
-    def __init__(self):
+    def __init__(self, window=None):
+        from app.core.scope_window import AccessWindow
+
         self.granted = {(_SCOPE, "dev", _REF): _IMEI}
+        self.window = AccessWindow.always() if window is None else window
 
     async def resolve(self, scope_ref, kind, ref, max_cache_secs):
-        return self.granted.get((scope_ref, kind, ref))
+        internal_id = self.granted.get((scope_ref, kind, ref))
+        return None if internal_id is None else (internal_id, self.window)
 
 
 @pytest.fixture
@@ -303,7 +307,9 @@ class TestBroadHandlersDoNotFlattenStatusCodes:
 
         class _Store:
             async def resolve_single(self, *args, **kwargs):
-                return (_REF, _IMEI)
+                from app.core.scope_window import AccessWindow
+
+                return (_REF, _IMEI, AccessWindow.always())
 
         monkeypatch.setattr("app.api.deps.scope_store", _Store())
         monkeypatch.setattr(
@@ -357,3 +363,131 @@ class TestBroadHandlersDoNotFlattenStatusCodes:
         assert body["msg"] == "valid"
         assert body["last_communication"] is None
         assert body["device_id"] == _REF
+
+
+@pytest.mark.unit
+class TestReassignedDeviceWindows:
+    """Contrato v1.3: el equipo se reasignó y el dueño anterior sigue mirando.
+
+    La fuga que esto cierra existía hoy: un aparate reasignado a otra
+    organización seguía emitiendo telemetría en vivo hacia la anterior, de
+    forma indefinida. El histórico del periodo propio sí se conserva, que es lo
+    que Jesús confirmó como intencional.
+    """
+
+    @pytest.fixture
+    def closed_assignment(self, monkeypatch, enforced):
+        """El equipo fue del sujeto en enero y ya no lo es."""
+        from datetime import datetime
+
+        from app.core.scope_window import AccessWindow, Interval
+
+        cerrada = AccessWindow(
+            (
+                Interval(
+                    datetime(2026, 1, 1, tzinfo=UTC),
+                    datetime(2026, 1, 31, tzinfo=UTC),
+                ),
+            )
+        )
+        monkeypatch.setattr("app.api.deps.scope_store", _FakeScopeStore(cerrada))
+
+    @pytest.fixture
+    def revoked_scope(self, monkeypatch, enforced):
+        """Referencia reconocida pero sin ninguna ventana."""
+        from app.core.scope_window import AccessWindow
+
+        monkeypatch.setattr(
+            "app.api.deps.scope_store", _FakeScopeStore(AccessWindow.none())
+        )
+
+    def test_live_position_is_withheld_after_reassignment(
+        self, client: TestClient, closed_assignment, monkeypatch
+    ):
+        """La posición ACTUAL ya no es del dueño anterior."""
+        from app.models.communications import CommunicationCurrentState
+
+        consultados = []
+
+        async def spy(session, device_ids, msg_class=None):
+            consultados.append(list(device_ids))
+            return [CommunicationCurrentState(device_id=d) for d in device_ids]
+
+        monkeypatch.setattr(
+            "app.api.routes.communications.get_latest_communications", spy
+        )
+
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == []
+        # Ni siquiera se llega a consultar la base de datos por ese equipo.
+        assert consultados == [[]]
+
+    def test_the_request_itself_is_not_rejected(
+        self, client: TestClient, closed_assignment
+    ):
+        """Se filtra, no se rechaza: el cliente conoce sus propias ventanas.
+
+        Un 403 aquí no protegería nada —no hay oráculo de pertenencia que
+        proteger— y rompería el caso legítimo de pedir varios equipos de los
+        que solo algunos siguen asignados.
+        """
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+
+    def test_history_is_still_reachable_after_reassignment(
+        self, client: TestClient, closed_assignment, monkeypatch
+    ):
+        """Conservar el histórico del periodo propio es intencional."""
+        consultados = []
+
+        async def spy(session, device_ids, received_at=None):
+            consultados.append(list(device_ids))
+            return []
+
+        monkeypatch.setattr("app.api.routes.communications.get_communications", spy)
+
+        response = client.get(
+            f"/api/v1/communications?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        # El histórico SÍ llega al repositorio, a diferencia de `latest`.
+        assert consultados == [[_IMEI]]
+
+    def test_a_scope_with_no_windows_is_denied_outright(
+        self, client: TestClient, revoked_scope
+    ):
+        """Sin ventanas es revocado, no "sin restricciones"."""
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 403
+
+    def test_an_open_assignment_still_serves_live_data(
+        self, client: TestClient, enforced, monkeypatch
+    ):
+        """El caso normal no se rompe al añadir ventanas."""
+        from app.models.communications import CommunicationCurrentState
+
+        async def latest(session, device_ids, msg_class=None):
+            return [CommunicationCurrentState(device_id=d) for d in device_ids]
+
+        monkeypatch.setattr(
+            "app.api.routes.communications.get_latest_communications", latest
+        )
+
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        assert response.json()[0]["device_id"] == _REF

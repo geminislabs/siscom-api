@@ -39,6 +39,7 @@ from app.core.data_token import (
     InvalidDataToken,
     data_token_verifier,
 )
+from app.core.scope_window import AccessWindow
 from app.services.scope_store import RefKind, ScopeStoreUnavailable, scope_store
 from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
 
@@ -68,10 +69,44 @@ class RefTranslation:
     def __init__(self) -> None:
         self.id_by_ref: dict[str, str] = {}
         self.ref_by_id: dict[str, str] = {}
+        # Ventana temporal concedida para cada identificador interno. Viaja con
+        # la traducción porque los dos salen del mismo `HGET` y los dos hacen
+        # falta al servir la respuesta.
+        self.window_by_id: dict[str, AccessWindow] = {}
 
-    def add(self, ref: str, internal_id: str) -> None:
+    def add(
+        self, ref: str, internal_id: str, window: AccessWindow | None = None
+    ) -> None:
         self.id_by_ref[ref] = internal_id
         self.ref_by_id[internal_id] = ref
+        # `is None`, NO `or`: una ventana vacía es FALSY, así que
+        # `window or AccessWindow.always()` convertiría un alcance revocado en
+        # acceso ilimitado. Es la colisión entre "no me lo pasaron" y "me
+        # pasaron el valor que significa nada".
+        self.window_by_id[internal_id] = (
+            AccessWindow.always() if window is None else window
+        )
+
+    def window_for(self, internal_id: str) -> AccessWindow:
+        """Ventana del identificador, o sin límite si no hay traducción activa.
+
+        Sin exigencia el cliente habla en identificadores internos y no hay
+        ventana que aplicar, igual que no hay referencia que traducir.
+        """
+        return self.window_by_id.get(internal_id, AccessWindow.always())
+
+    def live_ids(self, now=None) -> set[str]:
+        """Identificadores cuya asignación sigue viva en este instante.
+
+        Es lo que pueden ver `/communications/latest` y el stream: una
+        referencia con ventana cerrada conserva su histórico, pero no la
+        posición actual de un equipo que ya es de otro.
+        """
+        return {
+            internal_id
+            for internal_id, window in self.window_by_id.items()
+            if window.allows_now(now)
+        }
 
     def to_external(self, internal_id: str) -> str:
         """Traduce de vuelta al espacio externo.
@@ -233,9 +268,7 @@ async def resolve_refs(
 
     for kind, ref in requested:
         try:
-            internal_id = await scope_store.resolve(
-                claims.scope_ref, kind, ref, ceiling
-            )
+            resolved = await scope_store.resolve(claims.scope_ref, kind, ref, ceiling)
         except ScopeStoreUnavailable as e:
             # Se deniega igual —no se sirve nada sin autorizar—, pero con el
             # código que dice de quién es el problema.
@@ -244,7 +277,7 @@ async def resolve_refs(
                 detail="Authorization store unavailable",
             ) from e
 
-        if internal_id is None:
+        if resolved is None:
             logger.warning(
                 f"Acceso denegado — jti={claims.jti} tipo={kind} "
                 "(referencia no concedida por el scope)"
@@ -252,7 +285,19 @@ async def resolve_refs(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
             )
-        translation.add(ref, internal_id)
+
+        internal_id, window = resolved
+        if not window:
+            # Reconocida pero sin ninguna ventana: alcance revocado.
+            logger.warning(
+                f"Acceso denegado — jti={claims.jti} tipo={kind} "
+                "(referencia sin ventana de acceso)"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
+            )
+
+        translation.add(ref, internal_id, window)
 
     return translation
 
@@ -307,6 +352,28 @@ def internal_ids(request: Request, refs: list[str]) -> list[str]:
     if not translation:
         return refs
     return [translation.id_by_ref.get(ref, ref) for ref in refs]
+
+
+def live_internal_ids(request: Request, refs: list[str]) -> list[str]:
+    """Traduce a identificadores internos y deja solo los de asignación viva.
+
+    Para `/communications/latest`: la posición ACTUAL de un equipo reasignado
+    ya no es del dueño anterior, aunque conserve su histórico. Se filtra en vez
+    de rechazar la petición entera, por la misma razón que el recorte de
+    rangos: el cliente conoce sus propias ventanas, así que aquí no hay ningún
+    oráculo de pertenencia que proteger. Pedir cinco equipos y recibir tres no
+    le revela nada que no supiera.
+    """
+    translation = translation_of(request)
+    if not translation:
+        return refs
+
+    live = translation.live_ids()
+    return [
+        internal_id
+        for ref in refs
+        if (internal_id := translation.id_by_ref.get(ref, ref)) in live
+    ]
 
 
 def to_external_models(request: Request, models: list) -> list:
@@ -397,24 +464,76 @@ async def authorize_websocket(
     ceiling = cache_ceiling(claims)
     for ref in device_refs:
         try:
-            internal_id = await scope_store.resolve(
-                claims.scope_ref, "dev", ref, ceiling
-            )
+            resolved = await scope_store.resolve(claims.scope_ref, "dev", ref, ceiling)
         except ScopeStoreUnavailable:
             return await _reject_websocket(
                 websocket, 1013, "Authorization store unavailable"
             )
 
-        if internal_id is None:
+        if resolved is None:
             logger.warning(
                 f"WebSocket rechazado — jti={claims.jti} "
                 "(referencia no concedida por el scope)"
             )
             return await _reject_websocket(websocket, 1008, "Not authorized")
 
-        translation.add(ref, internal_id)
+        internal_id, window = resolved
+
+        # El stream es tiempo presente: exige asignación viva, no solo que la
+        # referencia haya estado alguna vez en el alcance. Un equipo reasignado
+        # conserva su histórico pero deja de emitir hacia el dueño anterior.
+        if not window.allows_now():
+            logger.warning(
+                f"WebSocket rechazado — jti={claims.jti} "
+                "(asignación cerrada: sin acceso en vivo)"
+            )
+            return await _reject_websocket(websocket, 1008, "Not authorized")
+
+        translation.add(ref, internal_id, window)
 
     return True, subprotocol, translation
+
+
+def frame_is_within_window(message, translation: RefTranslation) -> bool:
+    """¿Sigue viva la asignación del dispositivo de esta trama?
+
+    Se evalúa **por trama**, no solo en el handshake, por la misma razón que se
+    vigila el `exp` del token: una asignación puede cerrarse con la conexión ya
+    abierta, y en ese momento el equipo deja de ser del suscriptor. Sin esta
+    comprobación, una reasignación no surtiría efecto hasta que el cliente se
+    reconectara — que en un stream de posiciones puede no ocurrir en horas.
+
+    Sin traducción activa no hay ventanas y todo pasa, que es el comportamiento
+    en modo observación.
+    """
+    if not translation:
+        return True
+
+    device_id = _first_device_id(message)
+    if device_id is None:
+        # Sin identificador no se puede decidir. Se deja pasar porque el
+        # enrutado del broker ya la dirigió a este socket: el filtro de ventana
+        # no es el que decide a quién va la trama, solo si sigue vigente.
+        return True
+
+    return translation.window_for(device_id).allows_now()
+
+
+def _first_device_id(message):
+    """Primer `device_id` que aparece en el árbol del mensaje."""
+    if isinstance(message, dict):
+        for key, value in message.items():
+            if key == "device_id" and isinstance(value, str):
+                return value
+            found = _first_device_id(value)
+            if found is not None:
+                return found
+    elif isinstance(message, list):
+        for item in message:
+            found = _first_device_id(item)
+            if found is not None:
+                return found
+    return None
 
 
 def translate_ws_message(message, translation: RefTranslation):
@@ -483,11 +602,24 @@ class ShareGrant:
     porque el token viejo transporta el IMEI directamente.
     """
 
-    def __init__(self, device_ref: str, device_id: str, expires_at, legacy: bool):
+    def __init__(
+        self,
+        device_ref: str,
+        device_id: str,
+        expires_at,
+        legacy: bool,
+        window: AccessWindow | None = None,
+    ):
         self.device_ref = device_ref
         self.device_id = device_id
         self.expires_at = expires_at
         self.legacy = legacy
+        # Un enlace compartido también está sujeto a la ventana: si el equipo
+        # se reasigna, el enlace debe dejar de emitir posiciones aunque el
+        # token siga vigente.
+        # `is None`, no `or`: ver la nota en `RefTranslation.add`. Una ventana
+        # vacía es falsy y no debe degradar a "sin límite".
+        self.window = AccessWindow.always() if window is None else window
 
         # Se fija al conceder, no por trama: el alcance de una conexión no
         # cambia mientras el token siga vivo, así que resolverlo una vez en el
@@ -498,7 +630,7 @@ class ShareGrant:
         self._translation = RefTranslation()
         if not legacy:
             # En el formato heredado no hay espacio de referencias que traducir.
-            self._translation.add(device_ref, device_id)
+            self._translation.add(device_ref, device_id, self.window)
 
     @property
     def translation(self) -> RefTranslation:
@@ -545,9 +677,20 @@ async def resolve_share_token(token: str) -> ShareGrant:
             )
             raise ShareTokenInvalid("Share scope is empty, revoked or too broad")
 
-        device_ref, device_id = resolved
+        device_ref, device_id, window = resolved
+
+        # Un enlace de un equipo recién reasignado no debe seguir emitiendo.
+        # El `exp` del token no lo cubre: puede quedarle media hora de vida.
+        if not window.allows_now():
+            logger.warning(
+                f"Enlace de compartir con asignación cerrada — jti={claims.jti}"
+            )
+            raise ShareTokenInvalid("Device assignment is no longer active")
+
         logger.info(f"Enlace de compartir válido — jti={claims.jti}")
-        return ShareGrant(device_ref, device_id, claims.expires_at, legacy=False)
+        return ShareGrant(
+            device_ref, device_id, claims.expires_at, legacy=False, window=window
+        )
 
     if not settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN:
         raise ShareTokenInvalid("Legacy share tokens are no longer accepted")

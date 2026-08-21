@@ -75,13 +75,17 @@ def _legacy_token(**overrides) -> str:
 
 
 class _FakeScopeStore:
-    def __init__(self, entries: dict[str, str] | None = None):
+    def __init__(self, entries: dict[str, str] | None = None, window=None):
+        from app.core.scope_window import AccessWindow
+
         self.entries = {_REF: _IMEI} if entries is None else entries
+        self.window = AccessWindow.always() if window is None else window
 
     async def resolve_single(self, scope_ref, kind, max_cache_secs):
         if scope_ref != _SCOPE or len(self.entries) != 1:
             return None
-        return next(iter(self.entries.items()))
+        ref, internal_id = next(iter(self.entries.items()))
+        return ref, internal_id, self.window
 
 
 @pytest.fixture
@@ -102,11 +106,13 @@ def share_env(monkeypatch):
     monkeypatch.setattr("app.utils.paseto_validator.settings.PASETO_SECRET_KEY", "")
     monkeypatch.setattr("app.api.deps.paseto_validator", PasetoValidator())
 
-    def _configure(entries=None, accept_legacy=True):
+    def _configure(entries=None, accept_legacy=True, window=None):
         monkeypatch.setattr(
             "app.api.deps.settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN", accept_legacy
         )
-        monkeypatch.setattr("app.api.deps.scope_store", _FakeScopeStore(entries))
+        monkeypatch.setattr(
+            "app.api.deps.scope_store", _FakeScopeStore(entries, window)
+        )
 
     return _configure
 

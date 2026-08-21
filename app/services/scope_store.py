@@ -3,8 +3,13 @@ Resolución de `scope_ref` → refs autorizados contra Valkey.
 
 Contrato acordado con siscom-admin-api:
 
-- `dt:scope:<scope_ref>:dev`  → HASH `device_ref` → `device_id`
-- `dt:scope:<scope_ref>:unit` → HASH `unit_ref`   → `unit_id`
+- `dt:scope:<scope_ref>:dev`  → HASH `device_ref` → valor de alcance
+- `dt:scope:<scope_ref>:unit` → HASH `unit_ref`   → valor de alcance
+
+Desde el contrato v1.3 el valor no es solo el identificador interno: lleva
+también la **ventana temporal** en que ese acceso es válido (ver
+`app/core/scope_window.py`). La decodificación vive allí, en una sola función,
+para que un cambio de formato no se propague.
 
 Un solo `HGET` **autoriza y resuelve a la vez**: si devuelve `nil` el scope no
 concede esa referencia; si devuelve un valor, ese es el identificador interno
@@ -35,6 +40,7 @@ from typing import Literal
 from redis.asyncio import Redis
 
 from app.core.config import settings
+from app.core.scope_window import AccessWindow, parse_scope_value
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +117,7 @@ class ScopeStore:
         kind: RefKind,
         ref: str,
         max_cache_secs: float,
-    ) -> str | None:
+    ) -> tuple[str, AccessWindow] | None:
         """Autoriza y resuelve una referencia en una sola operación.
 
         Args:
@@ -124,9 +130,11 @@ class ScopeStore:
                 caché fija se comería esa precisión.
 
         Returns:
-            El identificador interno (`device_id` / `unit_id`) si el scope
-            concede la referencia, o `None` si no la concede: campo ausente o
-            clave revocada.
+            `(identificador_interno, ventana)` si el scope concede la
+            referencia, o `None` si no la concede: campo ausente, clave
+            revocada o valor no interpretable. La ventana dice **cuándo** vale
+            ese acceso; quien llama decide si le basta con "ahora" o necesita
+            recortar un rango.
 
         Raises:
             ScopeStoreUnavailable: si no se pudo consultar Valkey. También
@@ -136,7 +144,7 @@ class ScopeStore:
 
         cached, value = self._cache_lookup(cache_key)
         if cached:
-            return value
+            return parse_scope_value(value) if value is not None else None
 
         client = self._connect()
         if client is None:
@@ -155,11 +163,14 @@ class ScopeStore:
         self._cache_store(
             cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
         )
-        return resolved
+        # Se cachea el valor CRUDO y se decodifica en cada lectura. Guardar el
+        # objeto ya decodificado ahorraría poco y acoplaría el caché al
+        # formato: si cambia, habría entradas viejas con la forma anterior.
+        return parse_scope_value(resolved) if resolved is not None else None
 
     async def resolve_single(
         self, scope_ref: str, kind: RefKind, max_cache_secs: float
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, AccessWindow] | None:
         """Resuelve un scope que debe contener **exactamente una** referencia.
 
         Es el caso de compartir ubicación: la URL pública solo lleva el token,
@@ -174,8 +185,9 @@ class ScopeStore:
         entera; preferimos que ese fallo se convierta en un 403 ruidoso.
 
         Returns:
-            (referencia, id_interno) si el scope contiene exactamente una, o
-            `None` si no: vacío, revocado, o más de una entrada.
+            `(referencia, id_interno, ventana)` si el scope contiene
+            exactamente una, o `None` si no: vacío, revocado, más de una
+            entrada, o valor no interpretable.
 
         Raises:
             ScopeStoreUnavailable: si no se pudo consultar Valkey.
@@ -184,7 +196,7 @@ class ScopeStore:
 
         cached, value = self._cache_lookup(cache_key)
         if cached:
-            return None if value is None else tuple(value.split("\x00", 1))  # type: ignore[return-value]
+            return _decode_single(value)
 
         client = self._connect()
         if client is None:
@@ -198,8 +210,8 @@ class ScopeStore:
 
         resolved: str | None = None
         if len(entries) == 1:
-            ref, internal_id = next(iter(entries.items()))
-            resolved = f"{ref}\x00{internal_id}"
+            ref, raw_value = next(iter(entries.items()))
+            resolved = f"{ref}\x00{raw_value}"
         elif len(entries) > 1:
             logger.error(
                 f"Scope de compartir con {len(entries)} referencias: se esperaba "
@@ -209,7 +221,21 @@ class ScopeStore:
         self._cache_store(
             cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
         )
-        return None if resolved is None else tuple(resolved.split("\x00", 1))  # type: ignore[return-value]
+        return _decode_single(resolved)
+
+
+def _decode_single(cached: str | None) -> tuple[str, str, AccessWindow] | None:
+    """Deshace el empaquetado `<ref>\\x00<valor>` del caché de `resolve_single`."""
+    if cached is None:
+        return None
+
+    ref, _, raw_value = cached.partition("\x00")
+    parsed = parse_scope_value(raw_value)
+    if parsed is None:
+        return None
+
+    internal_id, window = parsed
+    return ref, internal_id, window
 
 
 scope_store = ScopeStore()

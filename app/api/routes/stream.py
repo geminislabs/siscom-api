@@ -4,7 +4,12 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.api.deps import RefTranslation, authorize_websocket, translate_ws_message
+from app.api.deps import (
+    RefTranslation,
+    authorize_websocket,
+    frame_is_within_window,
+    translate_ws_message,
+)
 from app.core.config import settings
 from app.services.kafka_client import kafka_client
 from app.utils.metrics import metrics_client
@@ -254,6 +259,36 @@ async def create_keepalive_task(
     return asyncio.create_task(send_keepalive())
 
 
+async def _deliver_event(
+    websocket: WebSocket, task: asyncio.Future, translation: RefTranslation | None
+) -> None:
+    """Aplica ventana y traducción a una trama, y la envía."""
+    try:
+        event = task.result()
+        event_name = (
+            _resolve_websocket_event_name(event)
+            if isinstance(event, dict)
+            else "message"
+        )
+
+        if translation is not None:
+            # La ventana se comprueba por trama, no solo en el handshake: una
+            # asignación puede cerrarse con la conexión ya abierta, y sin esto
+            # la reasignación no surtiría efecto hasta que el cliente se
+            # reconectara — que en un stream de posiciones puede tardar horas.
+            if not frame_is_within_window(event, translation):
+                logger.debug("Trama descartada: asignación cerrada durante la conexión")
+                return
+            event = translate_ws_message(event, translation)
+
+        await websocket.send_json({"event": event_name, "data": event})
+    except Exception as send_error:
+        logger.warning(
+            f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
+        )
+        raise WebSocketDisconnect(code=1000, reason="Connection closed") from send_error
+
+
 async def process_websocket_messages(
     websocket: WebSocket,
     queues: list[asyncio.Queue],
@@ -314,23 +349,7 @@ async def process_websocket_messages(
             for task in done:
                 if task is completed_receive:
                     continue
-                try:
-                    event = task.result()
-                    event_name = (
-                        _resolve_websocket_event_name(event)
-                        if isinstance(event, dict)
-                        else "message"
-                    )
-                    if translation is not None:
-                        event = translate_ws_message(event, translation)
-                    await websocket.send_json({"event": event_name, "data": event})
-                except Exception as send_error:
-                    logger.warning(
-                        f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
-                    )
-                    raise WebSocketDisconnect(
-                        code=1000, reason="Connection closed"
-                    ) from send_error
+                await _deliver_event(websocket, task, translation)
     finally:
         receive_task.cancel()
         with suppress(asyncio.CancelledError, Exception):

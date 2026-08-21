@@ -17,6 +17,7 @@ from app.api.deps import (
     ShareStoreUnavailable,
     ShareTokenExpired,
     ShareTokenInvalid,
+    frame_is_within_window,
     resolve_share_token,
     translate_ws_message,
 )
@@ -316,6 +317,14 @@ async def _process_queue_messages(
     for task in done:
         try:
             event = task.result()
+
+            # La ventana se comprueba por trama: si el equipo se reasigna con
+            # el enlace abierto, deja de emitir en el acto en vez de esperar a
+            # que caduque el token.
+            if not frame_is_within_window(event, translation):
+                logger.info("Trama descartada en enlace compartido: asignación cerrada")
+                continue
+
             # Un enlace compartido es público: la trama sale con la referencia,
             # nunca con el identificador interno.
             event = translate_ws_message(event, translation)
