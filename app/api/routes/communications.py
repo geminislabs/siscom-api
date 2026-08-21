@@ -1,10 +1,12 @@
-from datetime import date
+from datetime import UTC, date, datetime, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import (
     internal_ids,
     live_internal_ids,
+    raise_if_date_outside_windows,
+    raise_if_no_live_access,
     require_data_token,
     to_external_models,
     windows_for_request,
@@ -110,6 +112,12 @@ async def get_device_communications(
     - Sin filtro de fecha: Lista con campos básicos (CommunicationResponse)
     - Con filtro de fecha: Lista con TODOS los campos (CommunicationFullResponse)
     """
+    if received_at is not None:
+        # Una fecha fuera de la ventana no es "ese día no reportó".
+        raise_if_date_outside_windows(
+            request, [device_id], datetime.combine(received_at, time.min, tzinfo=UTC)
+        )
+
     results = await get_communications(
         db,
         internal_ids(request, [device_id]),
@@ -173,6 +181,10 @@ async def get_latest_communications_endpoint(  # noqa: B008
     # `latest` es tiempo presente: solo los equipos con asignación viva. Uno
     # reasignado conserva su histórico, pero su posición actual ya no es de su
     # dueño anterior.
+    #
+    # Si NINGUNO sigue asignado, 404 en vez de lista vacía: una lista vacía
+    # afirmaría "estos equipos no tienen posición", que es falso.
+    raise_if_no_live_access(request, device_ids)
     results = await get_latest_communications(
         db, live_internal_ids(request, device_ids)
     )
@@ -225,6 +237,7 @@ async def get_device_latest_communication(  # noqa: B008
     - Última comunicación del dispositivo especificado
     - Error 404 si el dispositivo no existe o no tiene comunicaciones
     """
+    raise_if_no_live_access(request, [device_id])
     result = await get_latest_communications(
         db, live_internal_ids(request, [device_id]), msg_class=class_
     )

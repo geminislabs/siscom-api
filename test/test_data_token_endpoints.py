@@ -422,25 +422,24 @@ class TestReassignedDeviceWindows:
             headers={"Authorization": f"Bearer {_token()}"},
         )
 
-        assert response.status_code == 200
-        assert response.json() == []
+        # 404, no lista vacía: una lista vacía afirmaría que estos equipos no
+        # tienen posición, que es falso — la tienen y no es de quien pregunta.
+        assert response.status_code == 404
         # Ni siquiera se llega a consultar la base de datos por ese equipo.
-        assert consultados == [[]]
+        assert consultados == []
 
-    def test_the_request_itself_is_not_rejected(
-        self, client: TestClient, closed_assignment
-    ):
-        """Se filtra, no se rechaza: el cliente conoce sus propias ventanas.
+    def test_it_is_not_a_403(self, client: TestClient, closed_assignment):
+        """La referencia SÍ está en el alcance: no es un problema de permiso.
 
-        Un 403 aquí no protegería nada —no hay oráculo de pertenencia que
-        proteger— y rompería el caso legítimo de pedir varios equipos de los
-        que solo algunos siguen asignados.
+        Un 403 aquí haría que el cliente reemitiera el token y reintentara,
+        para recibir exactamente lo mismo. El 404 dice "no hay nada ahí que
+        puedas ver" y es definitivo.
         """
         response = client.get(
             f"/api/v1/communications/latest?device_ids={_REF}",
             headers={"Authorization": f"Bearer {_token()}"},
         )
-        assert response.status_code == 200
+        assert response.status_code == 404
 
     def test_history_is_still_reachable_after_reassignment(
         self, client: TestClient, closed_assignment, monkeypatch
@@ -491,3 +490,127 @@ class TestReassignedDeviceWindows:
         )
         assert response.status_code == 200
         assert response.json()[0]["device_id"] == _REF
+
+
+@pytest.mark.unit
+class TestEmptyClampIsNotAnEmptySeries:
+    """Los tres estados que el cliente distingue sin adivinar.
+
+    - 403: la referencia no es tuya → reemitir token y reintentar una vez.
+    - 404: es tuya, pero en ese periodo no hay nada visible → NO reintentar,
+      un token nuevo daría lo mismo.
+    - 200 con lista vacía: no hubo datos.
+
+    Devolver `[]` por un rango fuera de ventana afirmaría "no hubo telemetría
+    en ese periodo" cuando sí la hubo y no es tuya. Es el mismo fallo de
+    veracidad que el `200 "valid"` con ubicación nula ante un corte de base de
+    datos: la respuesta no está diciendo mal de quién es el problema, está
+    afirmando algo del mundo que no es cierto.
+    """
+
+    @pytest.fixture
+    def closed_assignment(self, monkeypatch, enforced):
+        from datetime import datetime
+
+        from app.core.scope_window import AccessWindow, Interval
+
+        cerrada = AccessWindow(
+            (
+                Interval(
+                    datetime(2026, 1, 1, tzinfo=UTC),
+                    datetime(2026, 1, 31, tzinfo=UTC),
+                ),
+            )
+        )
+        monkeypatch.setattr("app.api.deps.scope_store", _FakeScopeStore(cerrada))
+
+    def test_live_endpoint_returns_404_when_nothing_is_live(
+        self, client: TestClient, closed_assignment
+    ):
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 404
+
+    def test_404_is_not_403(self, client: TestClient, closed_assignment):
+        """403 haría que el cliente reemita el token para nada.
+
+        El alcance SÍ contiene la referencia: reemitir daría exactamente el
+        mismo resultado, así que el reintento sería puro gasto contra
+        admin-api.
+        """
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code != 403
+
+    def test_a_ref_outside_the_scope_is_still_403(
+        self, client: TestClient, closed_assignment
+    ):
+        """El 404 no se come el caso que sí debe reintentarse."""
+        response = client.get(
+            "/api/v1/communications/latest?device_ids=ref-ajena",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 403
+
+    def test_a_date_outside_the_window_returns_404(
+        self, client: TestClient, closed_assignment
+    ):
+        response = client.get(
+            f"/api/v1/devices/{_REF}/communications?received_at=2026-06-15",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 404
+
+    def test_a_date_inside_the_window_is_served(
+        self, client: TestClient, closed_assignment, monkeypatch
+    ):
+        async def empty(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr("app.api.routes.communications.get_communications", empty)
+
+        response = client.get(
+            f"/api/v1/devices/{_REF}/communications?received_at=2026-01-15",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        # Dentro de ventana y sin datos: 200 con lista vacía, que aquí SÍ es
+        # verdad — no hubo telemetría ese día.
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_an_events_range_outside_the_window_returns_404(
+        self, client: TestClient, closed_assignment
+    ):
+        response = client.get(
+            "/api/v1/events?unit_id=123e4567-e89b-12d3-a456-426614174000"
+            "&from=2026-06-01T00:00:00Z&to=2026-06-30T23:59:59Z",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        # La unidad no está en el alcance de dispositivos, así que sale 403
+        # antes de llegar a la ventana. Lo que se fija aquí es que no sale 200
+        # con lista vacía.
+        assert response.status_code in (403, 404)
+
+    def test_a_partial_clamp_is_served_not_rejected(
+        self, client: TestClient, closed_assignment, monkeypatch
+    ):
+        """El recorte parcial no miente, así que no lleva 404.
+
+        Pedir un rango que solapa parcialmente devuelve lo concedido: el
+        límite lo puso quien preguntó.
+        """
+
+        async def empty(*args, **kwargs):
+            return []
+
+        monkeypatch.setattr("app.api.routes.communications.get_communications", empty)
+
+        response = client.get(
+            f"/api/v1/communications?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200

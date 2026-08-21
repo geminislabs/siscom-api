@@ -8,7 +8,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import internal_ids, require_data_token, windows_for_request
+from app.api.deps import (
+    internal_ids,
+    raise_if_range_outside_windows,
+    require_data_token,
+    windows_for_request,
+)
 from app.core.database import get_db
 from app.schemas.events import EventsPageResponse
 from app.services.events_repository import get_events
@@ -82,6 +87,9 @@ async def get_events_handler(  # noqa: PLR0913
     **Returns:**
     - `EventsPageResponse` con lista de eventos y cursor para la siguiente página (si existe)
     """
+    # Un rango entero fuera de ventana no es "no hubo eventos".
+    raise_if_range_outside_windows(request, [str(u) for u in unit_id], from_dt, to_dt)
+
     try:
         events, next_cursor = await get_events(
             db,

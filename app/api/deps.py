@@ -389,6 +389,60 @@ def windows_for_request(request: Request) -> dict | None:
     return dict(translation.window_by_id)
 
 
+# Los tres estados que el cliente tiene que poder distinguir sin adivinar, y
+# por qué cada uno lleva el código que lleva:
+#
+#   403 → la referencia no está en el alcance. El cliente reemite el token y
+#         reintenta UNA vez, porque suele ser un alcance obsoleto que se cura
+#         solo al recalcularlo.
+#   404 → la referencia es tuya, pero en ese periodo no hay nada que puedas
+#         ver. NO debe reintentarse: un token nuevo daría lo mismo.
+#   200 con lista vacía → no hubo datos. Es lo único que puede significar sin
+#         afirmar algo falso.
+#
+# Devolver lista vacía por un rango fuera de ventana afirmaría "no hubo
+# telemetría en ese periodo" cuando sí la hubo y simplemente no es tuya. El
+# recorte PARCIAL en cambio no miente: dar enero–marzo ante una petición de
+# enero–diciembre es dar lo tuyo, y el límite superior lo puso quien preguntó.
+
+
+def _raise_unless_any(request: Request, refs: list[str], visible) -> None:
+    """404 salvo que alguna referencia pedida supere el predicado.
+
+    Basta con que una sola aporte algo para seguir adelante: el recorte parcial
+    es una respuesta honesta y el cliente conoce sus propias ventanas.
+    """
+    translation = translation_of(request)
+    if not translation:
+        return
+
+    for ref in refs:
+        if visible(translation.window_for(translation.id_by_ref.get(ref, ref))):
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No data visible for the requested period",
+    )
+
+
+def raise_if_no_live_access(request: Request, refs: list[str]) -> None:
+    """Para los endpoints de tiempo presente: `latest` y el stream."""
+    _raise_unless_any(request, refs, lambda window: window.allows_now())
+
+
+def raise_if_range_outside_windows(
+    request: Request, refs: list[str], since, until
+) -> None:
+    """Para los endpoints de histórico con rango explícito."""
+    _raise_unless_any(request, refs, lambda window: bool(window.clamp(since, until)))
+
+
+def raise_if_date_outside_windows(request: Request, refs: list[str], instant) -> None:
+    """Para el filtro por fecha suelta de `/devices/{id}/communications`."""
+    _raise_unless_any(request, refs, lambda window: window.covers_instant(instant))
+
+
 def to_external_models(request: Request, models: list) -> list:
     """Devuelve los modelos con `device_id` traducido al espacio externo.
 
