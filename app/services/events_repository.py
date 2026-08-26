@@ -57,6 +57,7 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
 
 async def get_events(  # noqa: PLR0913
     session: AsyncSession,
+    *,
     unit_ids: list[UUID],
     from_dt: datetime,
     to_dt: datetime,

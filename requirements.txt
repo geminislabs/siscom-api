@@ -40,7 +40,13 @@ types-python-jose
 types-passlib
 
 # --- Herramientas de desarrollo y linting ---
-ruff
-black
+# Versiones FIJAS a propósito. El CI instala desde este fichero y ejecuta
+# `ruff check` como puerta de calidad: sin fijar, una release nueva de ruff
+# puede poner en rojo un PR verde sin que nadie haya tocado código. Pasó con
+# ruff 0.16, que estabilizó PLR0917 y empezó a marcar funciones que llevaban
+# meses en `develop`. Subir la versión debe ser un cambio deliberado y visible
+# en el diff, no un efecto secundario del día en que corre el CI.
+ruff==0.16.4
+black==26.5.1
 mypy
 pytest-cov
