@@ -24,7 +24,8 @@ router = APIRouter(
 
 
 @router.get("/events", response_model=EventsPageResponse)
-async def get_events_handler(  # noqa: PLR0913
+# PLR0917: los parámetros los inyecta FastAPI, no se pasan posicionalmente.
+async def get_events_handler(  # noqa: PLR0913, PLR0917
     request: Request,
     unit_id: list[UUID] = Query(
         ...,
