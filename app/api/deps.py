@@ -66,7 +66,22 @@ class RefTranslation:
     mismo espacio en el que llegó.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, enforcing: bool = True) -> None:
+        # Traducir y exigir son cosas distintas y hay que poder hacer la
+        # primera sin la segunda.
+        #
+        # En modo observación se pueblan igualmente las referencias, porque en
+        # cuanto admin-api exponga los `device_ref` el cliente empieza a
+        # mandarlos: sin traducción buscaríamos un dispositivo cuyo IMEI es una
+        # referencia, no encontraríamos nada, y el mapa se quedaría vacío sin
+        # error ni log. Traducir siempre elimina la dependencia de orden de
+        # despliegue entre los tres repos.
+        #
+        # Pero las VENTANAS no se aplican si `enforcing` es falso. Si no, poblar
+        # la traducción activaría de rebote los 404, el filtrado de `latest` y
+        # el recorte en SQL — enforcement real bajo un flag que promete no
+        # cambiar nada.
+        self.enforcing = enforcing
         self.id_by_ref: dict[str, str] = {}
         self.ref_by_id: dict[str, str] = {}
         # Ventana temporal concedida para cada identificador interno. Viaja con
@@ -302,6 +317,49 @@ async def resolve_refs(
     return translation
 
 
+async def resolve_for_translation(
+    claims: DataTokenClaims, requested: list[tuple[RefKind, str]]
+) -> RefTranslation:
+    """Resuelve las referencias para TRADUCIR, no para autorizar.
+
+    Es el camino de modo observación. Se diferencia de `resolve_refs` en tres
+    cosas, y las tres son deliberadas:
+
+    - **Una referencia que no resuelve no rechaza la petición: pasa tal cual.**
+      Es lo que permite que los clientes viejos —que mandan IMEIs— y los nuevos
+      —que mandan referencias— funcionen a la vez sin ramas. Un IMEI no es
+      campo del hash, así que no resuelve y sigue su camino.
+    - **Un corte de Valkey no rompe nada.** Se devuelve lo resuelto hasta ese
+      punto: traducir de menos degrada al comportamiento de hoy, que es
+      exactamente lo que el modo observación promete.
+    - **La traducción sale marcada como no vigente**, así que las ventanas no
+      se aplican. Traducir identificadores y acotar accesos son cosas
+      distintas.
+    """
+    translation = RefTranslation(enforcing=False)
+    ceiling = cache_ceiling(claims)
+
+    for kind, ref in requested:
+        try:
+            resolved = await scope_store.resolve(claims.scope_ref, kind, ref, ceiling)
+        except ScopeStoreUnavailable as e:
+            logger.warning(
+                f"[observación] sin traducción por Valkey inaccesible: {e}. "
+                "Los identificadores pasan sin traducir."
+            )
+            break
+
+        if resolved is None:
+            # No es una referencia de este alcance —lo más probable, un
+            # identificador interno del cliente antiguo—. Pasa sin tocar.
+            continue
+
+        internal_id, window = resolved
+        translation.add(ref, internal_id, window)
+
+    return translation
+
+
 async def require_data_token(request: Request) -> DataTokenClaims | None:
     """Dependencia de router para los endpoints HTTP del plano de datos.
 
@@ -312,7 +370,9 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
     """
     # Siempre presente, aunque vacía: los handlers la consultan sin tener que
     # preguntar antes si la exigencia está activada.
-    request.state.ref_translation = RefTranslation()
+    request.state.ref_translation = RefTranslation(
+        enforcing=settings.DATA_TOKEN_ENFORCED
+    )
 
     token = extract_bearer_token(request.headers.get("authorization"))
 
@@ -326,6 +386,9 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
             logger.warning(f"[observación] data token no verificable: {e}")
             return None
         logger.info(f"[observación] jti={claims.jti} {request.url.path}")
+        request.state.ref_translation = await resolve_for_translation(
+            claims, collect_requested_refs(request.path_params, request.query_params)
+        )
         return claims
 
     claims = verify_data_token(token)
@@ -338,8 +401,22 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
 
 
 def translation_of(request: Request) -> RefTranslation:
-    """Traducción asociada a la petición en curso."""
-    return getattr(request.state, "ref_translation", None) or RefTranslation()
+    """Traducción asociada a la petición en curso.
+
+    `is None`, NO `or`. Una traducción vacía es **falsy** —su `__bool__` mira
+    si hay referencias—, así que `getattr(...) or RefTranslation()` la
+    descartaba y la sustituía por una nueva **con `enforcing=True`**, activando
+    las ventanas en modo observación. Cuarta aparición en esta fase del mismo
+    error: el valor que significa "nada" comportándose como "todo".
+    """
+    translation = getattr(request.state, "ref_translation", None)
+    if translation is not None:
+        return translation
+
+    # La dependencia no llegó a ejecutarse. Se refleja el flag en vez de
+    # inventar un default: así este camino no puede ser más ni menos estricto
+    # que el configurado.
+    return RefTranslation(enforcing=settings.DATA_TOKEN_ENFORCED)
 
 
 def internal_ids(request: Request, refs: list[str]) -> list[str]:
@@ -365,8 +442,9 @@ def live_internal_ids(request: Request, refs: list[str]) -> list[str]:
     le revela nada que no supiera.
     """
     translation = translation_of(request)
-    if not translation:
-        return refs
+    if not translation.enforcing:
+        # Traducir sí, filtrar no: en observación las ventanas no se aplican.
+        return internal_ids(request, refs)
 
     live = translation.live_ids()
     return [
@@ -384,7 +462,7 @@ def windows_for_request(request: Request) -> dict | None:
     activar la exigencia es el único cambio de comportamiento.
     """
     translation = translation_of(request)
-    if not translation:
+    if not translation or not translation.enforcing:
         return None
     return dict(translation.window_by_id)
 
@@ -413,7 +491,7 @@ def _raise_unless_any(request: Request, refs: list[str], visible) -> None:
     es una respuesta honesta y el cliente conoce sus propias ventanas.
     """
     translation = translation_of(request)
-    if not translation:
+    if not translation or not translation.enforcing:
         return
 
     for ref in refs:
@@ -511,10 +589,17 @@ async def authorize_websocket(
     translation = RefTranslation()
 
     if not settings.DATA_TOKEN_ENFORCED:
+        translation = RefTranslation(enforcing=False)
         if token:
             try:
                 claims = data_token_verifier.verify(token)
                 logger.info(f"[observación] ws jti={claims.jti}")
+                # Igual que en HTTP: traducir sí, exigir no. Sin esto, un
+                # cliente que ya manda referencias se suscribiría a un
+                # `device_id` inexistente y no recibiría ni una trama.
+                translation = await resolve_for_translation(
+                    claims, [("dev", ref) for ref in device_refs]
+                )
             except Exception as e:
                 logger.warning(f"[observación] data token de ws no verificable: {e}")
         else:
@@ -573,7 +658,7 @@ def frame_is_within_window(message, translation: RefTranslation) -> bool:
     Sin traducción activa no hay ventanas y todo pasa, que es el comportamiento
     en modo observación.
     """
-    if not translation:
+    if not translation or not translation.enforcing:
         return True
 
     device_id = _first_device_id(message)

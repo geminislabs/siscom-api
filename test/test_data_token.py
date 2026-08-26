@@ -290,3 +290,46 @@ class TestRefTranslation:
         """Vacía significa "sin exigencia": los valores pasan tal cual."""
         assert not RefTranslation()
         assert RefTranslation().to_external("imei-1") == "imei-1"
+
+
+@pytest.mark.unit
+class TestFalsyTranslationIsNotAMissingTranslation:
+    """Cuarta aparición del mismo error en esta fase, y la más sutil.
+
+    `RefTranslation.__bool__` mira si hay referencias, así que una traducción
+    vacía es *falsy*. El idioma `getattr(...) or RefTranslation()` la descartaba
+    y la sustituía por una nueva con `enforcing=True`, activando las ventanas
+    justo en modo observación — el flag cambiaba el comportamiento sin que nadie
+    lo encendiera.
+
+    Las cuatro apariciones son el mismo patrón en cuatro formas: `AccessWindow`
+    vacía, la tupla vacía de admin-api, un `or_()` sin cláusulas en SQLAlchemy,
+    y esto. **El valor que significa «nada» comportándose como «todo».**
+    """
+
+    def test_an_empty_translation_is_falsy(self):
+        assert not RefTranslation()
+
+    def test_the_or_idiom_loses_the_enforcing_flag(self):
+        """Demostración del fallo, para que no se reintroduzca por comodidad."""
+        observando = RefTranslation(enforcing=False)
+        degradada = observando or RefTranslation()
+
+        assert degradada is not observando
+        assert degradada.enforcing is True  # ← exigencia que nadie pidió
+
+    def test_the_is_none_idiom_preserves_it(self):
+        observando = RefTranslation(enforcing=False)
+        correcta = RefTranslation() if observando is None else observando
+
+        assert correcta is observando
+        assert correcta.enforcing is False
+
+    def test_a_populated_translation_can_still_be_non_enforcing(self):
+        """Traducir y exigir son independientes: ese es el punto del flag."""
+        translation = RefTranslation(enforcing=False)
+        translation.add("ref-a", "imei-1")
+
+        assert translation  # tiene referencias
+        assert not translation.enforcing
+        assert translation.id_by_ref["ref-a"] == "imei-1"

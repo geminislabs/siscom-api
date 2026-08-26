@@ -614,3 +614,166 @@ class TestEmptyClampIsNotAnEmptySeries:
             headers={"Authorization": f"Bearer {_token()}"},
         )
         assert response.status_code == 200
+
+
+@pytest.mark.unit
+class TestObservationModeTranslatesButDoesNotEnforce:
+    """Traducir y exigir son cosas distintas, y en observación solo va la primera.
+
+    Motivo de la traducción: en cuanto admin-api expone los `device_ref`, el
+    cliente empieza a mandarlos. Sin traducir, buscaríamos un dispositivo cuyo
+    IMEI es una referencia, no encontraríamos nada, y el mapa se quedaría vacío
+    **sin error ni log**. Traducir siempre elimina la dependencia de orden de
+    despliegue entre los tres repos.
+
+    Motivo de no exigir: poblar la traducción activaría de rebote los 404, el
+    filtrado de `latest` y el recorte en SQL. Eso es enforcement real bajo un
+    flag que promete no cambiar nada.
+    """
+
+    @pytest.fixture
+    def observing_with_scope(self, monkeypatch):
+        """Modo observación, pero con verificador y alcance configurados."""
+        from app.core.data_token import DataTokenVerifier
+
+        monkeypatch.setattr(
+            "app.core.data_token.settings.DATA_TOKEN_PUBLIC_KEY_B64", _public_b64()
+        )
+        monkeypatch.setattr("app.core.data_token.settings.DATA_TOKEN_KEY_ID", "")
+        monkeypatch.setattr("app.api.deps.settings.DATA_TOKEN_ENFORCED", False)
+        monkeypatch.setattr("app.api.deps.data_token_verifier", DataTokenVerifier())
+
+        def _configure(window=None):
+            monkeypatch.setattr("app.api.deps.scope_store", _FakeScopeStore(window))
+
+        _configure()
+        return _configure
+
+    @pytest.fixture
+    def spy_latest(self, monkeypatch):
+        """Captura qué identificadores llegan al repositorio."""
+        from app.models.communications import CommunicationCurrentState
+
+        recibidos = []
+
+        async def spy(session, device_ids, msg_class=None):
+            recibidos.append(list(device_ids))
+            return [CommunicationCurrentState(device_id=d) for d in device_ids]
+
+        monkeypatch.setattr(
+            "app.api.routes.communications.get_latest_communications", spy
+        )
+        return recibidos
+
+    def test_a_ref_is_translated_even_without_enforcement(
+        self, client: TestClient, observing_with_scope, spy_latest
+    ):
+        """El cliente nuevo funciona antes de encender el flag."""
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        # El repositorio recibe el IMEI, no la referencia.
+        assert spy_latest == [[_IMEI]]
+        # Y la respuesta vuelve en el espacio en el que entró.
+        assert response.json()[0]["device_id"] == _REF
+
+    def test_a_raw_id_still_passes_through_untouched(
+        self, client: TestClient, observing_with_scope, spy_latest
+    ):
+        """El cliente antiguo sigue funcionando, sin ramas ni configuración.
+
+        Un IMEI no es campo del hash de alcance, así que no resuelve y pasa tal
+        cual. Los dos tipos de cliente conviven.
+        """
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_IMEI}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        assert spy_latest == [[_IMEI]]
+        assert response.json()[0]["device_id"] == _IMEI
+
+    def test_no_token_still_passes_through(
+        self, client: TestClient, observing_with_scope, spy_latest
+    ):
+        response = client.get(f"/api/v1/communications/latest?device_ids={_IMEI}")
+        assert response.status_code == 200
+        assert spy_latest == [[_IMEI]]
+
+    def test_a_closed_window_does_not_filter_in_observation(
+        self, client: TestClient, observing_with_scope, spy_latest
+    ):
+        """LA TRAMPA: poblar la traducción no debe activar las ventanas.
+
+        Con la asignación cerrada, en modo exigencia esto sería un 404. En
+        observación tiene que seguir sirviendo, o el flag habría cambiado el
+        comportamiento sin que nadie lo encendiera.
+        """
+        from datetime import datetime
+
+        from app.core.scope_window import AccessWindow, Interval
+
+        observing_with_scope(
+            AccessWindow(
+                (
+                    Interval(
+                        datetime(2026, 1, 1, tzinfo=UTC),
+                        datetime(2026, 1, 31, tzinfo=UTC),
+                    ),
+                )
+            )
+        )
+
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        assert spy_latest == [[_IMEI]]
+
+    def test_a_closed_window_does_not_clamp_the_query_in_observation(
+        self, client: TestClient, observing_with_scope, monkeypatch
+    ):
+        """Y tampoco debe llegar ninguna ventana al SQL."""
+        from datetime import datetime
+
+        from app.core.scope_window import AccessWindow, Interval
+
+        observing_with_scope(
+            AccessWindow((Interval(datetime(2026, 1, 1, tzinfo=UTC), None),))
+        )
+
+        recibidas = []
+
+        async def spy(session, device_ids, received_at=None, windows=None):
+            recibidas.append(windows)
+            return []
+
+        monkeypatch.setattr("app.api.routes.communications.get_communications", spy)
+
+        client.get(
+            f"/api/v1/communications?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert recibidas == [None]
+
+    def test_a_valkey_outage_degrades_to_passthrough(
+        self, client: TestClient, observing_with_scope, spy_latest, monkeypatch
+    ):
+        """Sin Valkey se traduce de menos, que es el comportamiento de hoy."""
+        from app.services.scope_store import ScopeStoreUnavailable
+
+        class _Down:
+            async def resolve(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
+        monkeypatch.setattr("app.api.deps.scope_store", _Down())
+
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_IMEI}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+        assert spy_latest == [[_IMEI]]
