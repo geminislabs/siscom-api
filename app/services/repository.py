@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import UTC, date
 
-from sqlalchemy import func
+from sqlalchemy import and_, false, func, or_
 from sqlalchemy.future import select
 
+from app.core.scope_window import AccessWindow
 from app.models.communications import (
     CommunicationCurrentState,
     CommunicationQueclink,
@@ -10,8 +11,57 @@ from app.models.communications import (
 )
 
 
+def _scope_filter(model, device_ids: list[str], windows: dict | None):
+    """Filtro por dispositivo, acotado a la ventana temporal de cada uno.
+
+    Sin ventanas (`windows is None`) el filtro es el de siempre: pertenencia al
+    conjunto de dispositivos. Con ventanas, cada dispositivo lleva su propio
+    rango, así que el predicado es una unión de conjunciones y no se puede
+    expresar con un `IN`::
+
+        (device_id = A AND received_at >= … AND received_at < …)
+        OR (device_id = B AND …)
+
+    El recorte va en la consulta, no después de traerla: filtrar en Python
+    obligaría a cargar en memoria filas que el cliente no puede ver.
+
+    Un dispositivo con ventanas vacías no produce ninguna cláusula, así que
+    queda fuera del resultado. Y si NINGUNO aporta cláusulas, se devuelve
+    `false()` en vez de un `or_()` vacío — que en SQLAlchemy es verdadero y
+    devolvería la tabla entera.
+    """
+    if windows is None:
+        return model.device_id.in_(device_ids)
+
+    clauses = []
+    for device_id in device_ids:
+        window: AccessWindow = windows.get(device_id, AccessWindow.none())
+        for interval in window.intervals:
+            conditions = [model.device_id == device_id]
+
+            # `received_at` es naive en estas tablas; los límites llegan con
+            # zona. Se comparan en UTC quitando el tzinfo, no convirtiendo la
+            # columna: lo segundo impediría usar el índice.
+            if interval.since is not None:
+                conditions.append(model.received_at >= _naive_utc(interval.since))
+            if interval.until is not None:
+                conditions.append(model.received_at < _naive_utc(interval.until))
+
+            clauses.append(and_(*conditions))
+
+    return or_(*clauses) if clauses else false()
+
+
+def _naive_utc(instant):
+    """Pasa un instante con zona a UTC sin tzinfo, para columnas naive."""
+    return instant.astimezone(UTC).replace(tzinfo=None)
+
+
 async def get_communications(
-    session, device_ids: list[str], received_at: date | None = None
+    session,
+    device_ids: list[str],
+    received_at: date | None = None,
+    windows: dict | None = None,
 ):
     """
     Obtiene el histórico completo de comunicaciones de los dispositivos especificados.
@@ -20,15 +70,17 @@ async def get_communications(
         session: Sesión de base de datos
         device_ids: Lista de IDs de dispositivos
         received_at: Fecha opcional para filtrar por received_at (solo fecha, sin hora)
+        windows: Ventana temporal concedida por dispositivo. `None` = sin
+            restricción temporal, el comportamiento anterior al contrato v1.3.
 
     Returns:
         Lista con todas las comunicaciones (Suntech + Queclink)
     """
     query_suntech = select(CommunicationSuntech).where(
-        CommunicationSuntech.device_id.in_(device_ids)
+        _scope_filter(CommunicationSuntech, device_ids, windows)
     )
     query_queclink = select(CommunicationQueclink).where(
-        CommunicationQueclink.device_id.in_(device_ids)
+        _scope_filter(CommunicationQueclink, device_ids, windows)
     )
 
     # Si se proporciona received_at, filtrar por esa fecha

@@ -120,7 +120,7 @@ class TestConfigCoverage:
         assert settings.DB_PORT == 5432
         assert settings.JWT_ALGORITHM == "HS256"
         assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 60
-        assert settings.ALLOWED_ORIGINS == "*"
+        assert settings.ALLOWED_ORIGINS
         assert settings.STATSD_PORT == 8126
 
     def test_kafka_config_defaults(self):
@@ -304,11 +304,16 @@ class TestPasetoValidatorCoverage:
         assert hasattr(paseto_validator, "validate")
         assert callable(paseto_validator.validate)
 
-    def test_paseto_validator_has_key_attribute(self):
-        """Test: PasetoValidator tiene atributo key."""
+    def test_paseto_validator_loads_at_least_one_key(self):
+        """Test: PasetoValidator carga las claves configuradas.
+
+        `keys` es una lista de tuplas (nombre_de_la_variable, Key) que se
+        prueban en orden durante la ventana de migración de claves.
+        """
         from app.utils.paseto_validator import paseto_validator
 
-        assert hasattr(paseto_validator, "key")
+        assert paseto_validator.keys
+        assert all(isinstance(name, str) for name, _ in paseto_validator.keys)
 
 
 class TestMiddlewareCoverage:

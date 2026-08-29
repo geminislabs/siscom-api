@@ -1,7 +1,16 @@
-from datetime import date
+from datetime import UTC, date, datetime, time
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from app.api.deps import (
+    internal_ids,
+    live_internal_ids,
+    raise_if_date_outside_windows,
+    raise_if_no_live_access,
+    require_data_token,
+    to_external_models,
+    windows_for_request,
+)
 from app.core.database import get_db
 from app.schemas.communications import (
     CommunicationFullResponse,
@@ -10,7 +19,14 @@ from app.schemas.communications import (
 )
 from app.services.repository import get_communications, get_latest_communications
 
-router = APIRouter(prefix="/api/v1", tags=["Communications"])
+# La verificación va a nivel de router: cubre los cuatro endpoints sin tocar
+# ninguna firma, y un endpoint nuevo queda protegido por omisión en vez de por
+# acordarse de añadir la dependencia.
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["Communications"],
+    dependencies=[Depends(require_data_token)],
+)
 
 
 # ============================================================================
@@ -20,6 +36,7 @@ router = APIRouter(prefix="/api/v1", tags=["Communications"])
 
 @router.get("/communications", response_model=list[CommunicationResponse])
 async def get_communications_history(  # noqa: B008
+    request: Request,
     device_ids: list[str] = Query(
         ...,
         description="Lista de IDs de dispositivos GPS a consultar",
@@ -45,7 +62,17 @@ async def get_communications_history(  # noqa: B008
     **Returns:**
     - Lista de comunicaciones de los dispositivos especificados
     """
-    return await get_communications(db, device_ids)
+    # El histórico se recorta a la ventana de cada dispositivo dentro de la
+    # consulta: un equipo reasignado conserva su periodo, no el del dueño
+    # siguiente.
+    results = await get_communications(
+        db,
+        internal_ids(request, device_ids),
+        windows=windows_for_request(request),
+    )
+    return to_external_models(
+        request, [CommunicationResponse.model_validate(r) for r in results]
+    )
 
 
 @router.get(
@@ -53,6 +80,7 @@ async def get_communications_history(  # noqa: B008
     response_model=list[CommunicationFullResponse] | list[CommunicationResponse],
 )
 async def get_device_communications(
+    request: Request,
     device_id: str,
     received_at: date | None = Query(
         None,
@@ -84,14 +112,29 @@ async def get_device_communications(
     - Sin filtro de fecha: Lista con campos básicos (CommunicationResponse)
     - Con filtro de fecha: Lista con TODOS los campos (CommunicationFullResponse)
     """
-    results = await get_communications(db, [device_id], received_at=received_at)
+    if received_at is not None:
+        # Una fecha fuera de la ventana no es "ese día no reportó".
+        raise_if_date_outside_windows(
+            request, [device_id], datetime.combine(received_at, time.min, tzinfo=UTC)
+        )
+
+    results = await get_communications(
+        db,
+        internal_ids(request, [device_id]),
+        received_at=received_at,
+        windows=windows_for_request(request),
+    )
 
     # Si hay filtro de fecha, devolver respuesta completa
     if received_at is not None:
-        return [CommunicationFullResponse.model_validate(r) for r in results]
+        return to_external_models(
+            request, [CommunicationFullResponse.model_validate(r) for r in results]
+        )
 
     # Sin filtro, devolver respuesta básica (comportamiento original)
-    return [CommunicationResponse.model_validate(r) for r in results]
+    return to_external_models(
+        request, [CommunicationResponse.model_validate(r) for r in results]
+    )
 
 
 # ============================================================================
@@ -101,6 +144,7 @@ async def get_device_communications(
 
 @router.get("/communications/latest", response_model=list[CommunicationLatestResponse])
 async def get_latest_communications_endpoint(  # noqa: B008
+    request: Request,
     device_ids: list[str] = Query(
         ...,
         description="Lista de IDs de dispositivos GPS a consultar",
@@ -134,7 +178,19 @@ async def get_latest_communications_endpoint(  # noqa: B008
     **Returns:**
     - Lista con la última comunicación de cada dispositivo especificado
     """
-    return await get_latest_communications(db, device_ids)
+    # `latest` es tiempo presente: solo los equipos con asignación viva. Uno
+    # reasignado conserva su histórico, pero su posición actual ya no es de su
+    # dueño anterior.
+    #
+    # Si NINGUNO sigue asignado, 404 en vez de lista vacía: una lista vacía
+    # afirmaría "estos equipos no tienen posición", que es falso.
+    raise_if_no_live_access(request, device_ids)
+    results = await get_latest_communications(
+        db, live_internal_ids(request, device_ids)
+    )
+    return to_external_models(
+        request, [CommunicationLatestResponse.model_validate(r) for r in results]
+    )
 
 
 @router.get(
@@ -142,6 +198,7 @@ async def get_latest_communications_endpoint(  # noqa: B008
     response_model=CommunicationLatestResponse,
 )
 async def get_device_latest_communication(  # noqa: B008
+    request: Request,
     device_id: str,
     class_: str = Query(
         "STATUS",
@@ -180,7 +237,10 @@ async def get_device_latest_communication(  # noqa: B008
     - Última comunicación del dispositivo especificado
     - Error 404 si el dispositivo no existe o no tiene comunicaciones
     """
-    result = await get_latest_communications(db, [device_id], msg_class=class_)
+    raise_if_no_live_access(request, [device_id])
+    result = await get_latest_communications(
+        db, live_internal_ids(request, [device_id]), msg_class=class_
+    )
 
     if not result:
         raise HTTPException(
@@ -188,4 +248,6 @@ async def get_device_latest_communication(  # noqa: B008
             detail=f"No se encontró comunicación para el dispositivo {device_id}",
         )
 
-    return result[0]
+    return to_external_models(
+        request, [CommunicationLatestResponse.model_validate(result[0])]
+    )[0]
