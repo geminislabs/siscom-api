@@ -21,6 +21,9 @@ passlib[bcrypt]
 # --- Seguridad PASETO ---
 pyseto
 
+# --- Valkey/Redis (resolución de scope del data token) ---
+redis>=5
+
 # --- Kafka Client ---
 kafka-python
 

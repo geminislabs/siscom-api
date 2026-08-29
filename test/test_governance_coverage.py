@@ -521,7 +521,7 @@ class TestPublicRoutesUnit:
         from app.utils.paseto_validator import InvalidToken
 
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(side_effect=InvalidToken("bad")),
         )
         response = client.get("/api/v1/public/share-location/init?token=invalid")
@@ -531,7 +531,7 @@ class TestPublicRoutesUnit:
         from app.utils.paseto_validator import ExpiredToken
 
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(side_effect=ExpiredToken("expired")),
         )
         response = client.get("/api/v1/public/share-location/init?token=expired")
@@ -539,7 +539,7 @@ class TestPublicRoutesUnit:
 
     def test_public_init_missing_device_id(self, client, monkeypatch):
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(
                 return_value={
                     "scope": "public-location-share",
@@ -549,8 +549,10 @@ class TestPublicRoutesUnit:
             ),
         )
         response = client.get("/api/v1/public/share-location/init?token=ok")
-        # HTTPException interno es capturado por except Exception → 500 (comportamiento actual)
-        assert response.status_code == 500
+        # Antes, la HTTPException interna la tragaba el `except Exception` y
+        # salía un 500. Ahora `resolve_share_token` lo trata como token
+        # inválido, que es lo que es, y sale un 403.
+        assert response.status_code == 403
 
 
 @pytest.mark.unit
