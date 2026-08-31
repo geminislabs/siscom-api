@@ -22,7 +22,7 @@ passlib[bcrypt]
 pyseto
 
 # --- Valkey/Redis (resolución de scope del data token) ---
-redis>=5
+redis>=8.1.0
 
 # --- Kafka Client ---
 kafka-python
