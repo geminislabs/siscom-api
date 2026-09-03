@@ -4,6 +4,12 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.api.deps import (
+    RefTranslation,
+    authorize_websocket,
+    frame_is_within_window,
+    translate_ws_message,
+)
 from app.core.config import settings
 from app.services.kafka_client import kafka_client
 from app.utils.metrics import metrics_client
@@ -207,26 +213,20 @@ def start_kafka_broker_bridge():
 async def validate_device_ids(
     websocket: WebSocket, device_ids: str | None
 ) -> list[str]:
-    """Valida y parsea los device_ids del query parameter."""
+    """Valida y parsea los device_ids del query parameter.
+
+    Se ejecuta ANTES de `websocket.accept()`, así que un rechazo cierra el
+    handshake sin llegar a establecer la conexión (mismo patrón que
+    `app/api/routes/public.py`). Como contrapartida no se puede enviar un
+    payload de error al cliente: el navegador solo ve el fallo de handshake.
+    """
     raw_list = device_ids.split(",") if device_ids else []
     device_list = [d.strip() for d in raw_list if d and d.strip()]
 
     if not device_list:
         logger.warning("WebSocket rechazado: no se especificaron device_ids")
-        try:
-            await websocket.send_json(
-                {
-                    "event": "error",
-                    "data": {
-                        "message": "Debe especificar al menos un device_id en los query params",
-                        "example": "?device_ids=867564050638581,867564050638582",
-                    },
-                }
-            )
-        except Exception as e:
-            logger.debug(f"Error al enviar mensaje de error al cliente: {e}")
-
-        await websocket.close(code=1008)
+        with suppress(Exception):
+            await websocket.close(code=1008)
         raise WebSocketDisconnect(code=1008, reason="Missing device_ids")
 
     return list(dict.fromkeys(device_list))
@@ -259,8 +259,40 @@ async def create_keepalive_task(
     return asyncio.create_task(send_keepalive())
 
 
+async def _deliver_event(
+    websocket: WebSocket, task: asyncio.Future, translation: RefTranslation | None
+) -> None:
+    """Aplica ventana y traducción a una trama, y la envía."""
+    try:
+        event = task.result()
+        event_name = (
+            _resolve_websocket_event_name(event)
+            if isinstance(event, dict)
+            else "message"
+        )
+
+        if translation is not None:
+            # La ventana se comprueba por trama, no solo en el handshake: una
+            # asignación puede cerrarse con la conexión ya abierta, y sin esto
+            # la reasignación no surtiría efecto hasta que el cliente se
+            # reconectara — que en un stream de posiciones puede tardar horas.
+            if not frame_is_within_window(event, translation):
+                logger.debug("Trama descartada: asignación cerrada durante la conexión")
+                return
+            event = translate_ws_message(event, translation)
+
+        await websocket.send_json({"event": event_name, "data": event})
+    except Exception as send_error:
+        logger.warning(
+            f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
+        )
+        raise WebSocketDisconnect(code=1000, reason="Connection closed") from send_error
+
+
 async def process_websocket_messages(
-    websocket: WebSocket, queues: list[asyncio.Queue]
+    websocket: WebSocket,
+    queues: list[asyncio.Queue],
+    translation: RefTranslation | None = None,
 ) -> None:
     """Consume la cola del socket y envía eventos al cliente.
 
@@ -317,21 +349,7 @@ async def process_websocket_messages(
             for task in done:
                 if task is completed_receive:
                     continue
-                try:
-                    event = task.result()
-                    event_name = (
-                        _resolve_websocket_event_name(event)
-                        if isinstance(event, dict)
-                        else "message"
-                    )
-                    await websocket.send_json({"event": event_name, "data": event})
-                except Exception as send_error:
-                    logger.warning(
-                        f"Error al enviar mensaje WebSocket (conexión cerrada): {send_error}"
-                    )
-                    raise WebSocketDisconnect(
-                        code=1000, reason="Connection closed"
-                    ) from send_error
+                await _deliver_event(websocket, task, translation)
     finally:
         receive_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
@@ -362,11 +380,27 @@ async def cleanup_websocket_connection(
 @router.websocket("/stream")
 async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
     """Endpoint WebSocket para recibir eventos de dispositivos en tiempo real."""
-    await websocket.accept()
-    await metrics_client.increment_active_connections()
-
     try:
-        device_list = await validate_device_ids(websocket, device_ids)
+        # Validar ANTES de aceptar: una conexión que no supera la validación
+        # nunca llega a establecerse.
+        requested_refs = await validate_device_ids(websocket, device_ids)
+
+        # Autorizar también antes de aceptar. `subprotocol` hay que devolverlo
+        # en el accept: si el cliente ofreció uno y el servidor no hace eco, el
+        # navegador cierra la conexión nada más abrirla.
+        authorized, subprotocol, translation = await authorize_websocket(
+            websocket, requested_refs
+        )
+        if not authorized:
+            raise WebSocketDisconnect(code=1008, reason="Not authorized")
+
+        await websocket.accept(subprotocol=subprotocol)
+        await metrics_client.increment_active_connections()
+
+        # El broker se indexa por identificador interno, que es con lo que
+        # llegan los mensajes de Kafka. Las tramas de salida se traducen de
+        # vuelta a referencias en `process_websocket_messages`.
+        device_list = [translation.id_by_ref.get(ref, ref) for ref in requested_refs]
         queues = await ws_broker.subscribe(device_list)
 
         logger.info(
@@ -378,7 +412,7 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
         connection_active.set()
 
         keepalive_task = await create_keepalive_task(websocket, connection_active)
-        await process_websocket_messages(websocket, queues)
+        await process_websocket_messages(websocket, queues, translation)
 
     except WebSocketDisconnect as disconnect_error:
         logger.info(
@@ -410,7 +444,8 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
             await websocket.close()
 
 
-@router.get("/stream/stats")
-async def get_broker_stats():
-    """Obtiene estadísticas en tiempo real del WebSocket manager."""
-    return ws_broker.get_stats()
+# NOTA: `GET /api/v1/stream/stats` se retiró de la superficie pública en la
+# Fase 1 de aislamiento: exponía telemetría operativa (suscriptores activos,
+# devices monitorizados, mensajes descartados) sin autenticación y sin cliente
+# conocido. `WebSocketManager.get_stats()` sigue disponible para métricas
+# internas; si vuelve a hacer falta por HTTP, debe ir autenticado.

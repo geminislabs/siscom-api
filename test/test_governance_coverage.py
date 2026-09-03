@@ -464,10 +464,14 @@ class TestStreamRoutesUnit:
         with pytest.raises(WebSocketDisconnect):
             await validate_device_ids(websocket, "")
 
-    def test_stream_stats_endpoint(self, client):
+    def test_stream_stats_endpoint_is_retired(self, client):
+        """El endpoint público de stats se retiró en la Fase 1 de aislamiento.
+
+        Exponía telemetría operativa sin autenticación. `get_stats()` sigue
+        existiendo para uso interno (ver test_ws_manager_get_stats).
+        """
         response = client.get("/api/v1/stream/stats")
-        assert response.status_code == 200
-        assert "active_subscribers" in response.json()
+        assert response.status_code == 404
 
 
 @pytest.mark.unit
@@ -517,7 +521,7 @@ class TestPublicRoutesUnit:
         from app.utils.paseto_validator import InvalidToken
 
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(side_effect=InvalidToken("bad")),
         )
         response = client.get("/api/v1/public/share-location/init?token=invalid")
@@ -527,7 +531,7 @@ class TestPublicRoutesUnit:
         from app.utils.paseto_validator import ExpiredToken
 
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(side_effect=ExpiredToken("expired")),
         )
         response = client.get("/api/v1/public/share-location/init?token=expired")
@@ -535,7 +539,7 @@ class TestPublicRoutesUnit:
 
     def test_public_init_missing_device_id(self, client, monkeypatch):
         monkeypatch.setattr(
-            "app.api.routes.public.paseto_validator.validate",
+            "app.api.deps.paseto_validator.validate",
             MagicMock(
                 return_value={
                     "scope": "public-location-share",
@@ -545,8 +549,10 @@ class TestPublicRoutesUnit:
             ),
         )
         response = client.get("/api/v1/public/share-location/init?token=ok")
-        # HTTPException interno es capturado por except Exception → 500 (comportamiento actual)
-        assert response.status_code == 500
+        # Antes, la HTTPException interna la tragaba el `except Exception` y
+        # salía un 500. Ahora `resolve_share_token` lo trata como token
+        # inválido, que es lo que es, y sale un 403.
+        assert response.status_code == 403
 
 
 @pytest.mark.unit
@@ -555,7 +561,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
 
         payload = {
             "scope": "public-location-share",
@@ -573,7 +579,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import ExpiredToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
         payload = {
             "scope": "public-location-share",
             "unit_id": str(uuid4()),
@@ -592,7 +598,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import InvalidToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
         payload = {
             "scope": "public-location-share",
             "exp": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
@@ -610,7 +616,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import InvalidToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
         payload = {
             "scope": "public-location-share",
             "unit_id": str(uuid4()),
@@ -628,7 +634,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import InvalidToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
         payload = {
             "scope": "public-location-share",
             "unit_id": str(uuid4()),
@@ -647,7 +653,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import InvalidToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
         decoded = MagicMock()
         decoded.payload = json.dumps(["not", "a", "dict"]).encode()
 
@@ -661,7 +667,7 @@ class TestPasetoValidatorUnit:
         from app.utils.paseto_validator import InvalidToken, PasetoValidator
 
         validator = PasetoValidator.__new__(PasetoValidator)
-        validator.key = MagicMock()
+        validator.keys = [("SHARE_LOCATION_KEY_B64", MagicMock())]
 
         with (
             patch(

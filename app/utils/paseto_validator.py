@@ -18,6 +18,9 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# PASETO v4.local usa XChaCha20-Poly1305: la clave es de 32 bytes exactos.
+_V4_LOCAL_KEY_BYTES = 32
+
 
 class InvalidToken(Exception):
     """Errores genéricos de token inválido o corrupto."""
@@ -41,22 +44,134 @@ class PasetoValidator:
 
     def __init__(self):
         """
-        Inicializa el validador con la clave secreta del entorno.
+        Inicializa el validador con las claves disponibles en el entorno.
+
+        Durante la ventana de migración se aceptan dos claves, y se prueban en
+        este orden:
+
+        1. `SHARE_LOCATION_KEY_B64` — clave dedicada a compartir ubicación.
+        2. `PASETO_SECRET_KEY` — clave HEREDADA, compartida con
+           siscom-admin-api, que también firma sus tokens de servicio
+           `internal-*`. Mientras esté configurada aquí, este servicio puede
+           emitir tokens administrativos de admin-api.
+
+        Para cerrar la migración basta con vaciar `PASETO_SECRET_KEY` en el
+        entorno: no hace falta ningún cambio de código.
 
         Raises:
-            RuntimeError: Si PASETO_SECRET_KEY no está configurada
+            RuntimeError: Si no hay ninguna clave configurada, o si alguna de
+                las configuradas tiene un formato inválido.
         """
-        # Cargar clave secreta
-        key_b64 = settings.PASETO_SECRET_KEY
-        if not key_b64:
-            raise RuntimeError("PASETO_SECRET_KEY not set in environment")
+        self.keys: list[tuple[str, Any]] = []
 
-        try:
-            key_bytes = base64.b64decode(key_b64)
-            # Crear objeto Key de pyseto para v4.local
-            self.key = Key.new(version=4, purpose="local", key=key_bytes)
-        except Exception as e:
-            raise RuntimeError(f"Invalid PASETO_SECRET_KEY format: {e}") from e
+        # `strict` distingue las dos claves a propósito:
+        #
+        # - SHARE_LOCATION_KEY_B64 es nueva, así que exigimos el formato
+        #   correcto y fallamos al arrancar si no lo es. Una clave mal copiada
+        #   produce un validador que rechaza TODOS los tokens sin explicar por
+        #   qué, y durante una migración de claves eso es un apagón mudo.
+        #
+        # - PASETO_SECRET_KEY es la heredada y ya está desplegada. El código
+        #   anterior la decodificaba de forma laxa (`base64.b64decode` descarta
+        #   en silencio los caracteres no válidos), así que un valor que no sea
+        #   base64 real lleva tiempo funcionando como los bytes que salen de esa
+        #   decodificación. Mantenemos ese comportamiento para no tumbar el
+        #   servicio a mitad de transición, pero avisamos.
+        for name, key_b64, strict in (
+            ("SHARE_LOCATION_KEY_B64", settings.SHARE_LOCATION_KEY_B64, True),
+            ("PASETO_SECRET_KEY", settings.PASETO_SECRET_KEY, False),
+        ):
+            if not key_b64:
+                continue
+
+            try:
+                key_bytes = base64.b64decode(key_b64, validate=strict)
+            except Exception as e:
+                raise RuntimeError(f"Invalid {name} format: {e}") from e
+
+            # La clave de ceros es el marcador de posición que arrastran los
+            # `.env.example`. No es débil: es pública. Comprobar solo la
+            # longitud la dejaría pasar, porque 32 bytes de ceros miden 32.
+            if key_bytes and not any(key_bytes):
+                message = f"{name} es la clave de ceros del .env.example"
+                if strict:
+                    raise RuntimeError(message)
+                logger.critical(
+                    f"🚨 {message}. Es una clave PÚBLICA: cualquiera puede "
+                    "emitir tokens válidos. Trátalo como incidente, no como "
+                    "aviso de configuración."
+                )
+
+            if len(key_bytes) != _V4_LOCAL_KEY_BYTES:
+                message = (
+                    f"{name}: PASETO v4.local requiere {_V4_LOCAL_KEY_BYTES} "
+                    f"bytes; el valor configurado decodifica a {len(key_bytes)}"
+                )
+                if strict:
+                    raise RuntimeError(message)
+                logger.warning(
+                    f"⚠️  {message}. Se conserva por compatibilidad, pero además "
+                    "de perder entropía esto ROMPE LA INTEROPERABILIDAD: "
+                    "siscom-admin-api rellena con ceros hasta "
+                    f"{_V4_LOCAL_KEY_BYTES} bytes y este servicio no, así que "
+                    "una clave que no mida ya 32 produce material efectivo "
+                    "distinto en cada servicio aunque la variable tenga el "
+                    "mismo contenido, y los tokens de compartir ubicación no "
+                    "validan entre servicios. Ver scripts/share_key_fingerprint.py"
+                )
+
+            self.keys.append((name, Key.new(version=4, purpose="local", key=key_bytes)))
+
+        if not self.keys:
+            # NO es un error de arranque, y es deliberado.
+            #
+            # El paso que cierra la escalada de la API interna consiste en
+            # borrar PASETO_SECRET_KEY del entorno. Como la migración a
+            # v4.public dejó SHARE_LOCATION_KEY_B64 sin configurar en ningún
+            # sitio, ese borrado deja este validador sin ninguna clave. Si eso
+            # impidiera arrancar, el paso más urgente de la fase tumbaría el
+            # servicio y nadie lo ejecutaría.
+            #
+            # Para entonces el validador heredado ya no hace falta: compartir
+            # ubicación va por data token. Así que sin clave no se valida nada
+            # —fail closed— pero el servicio arranca con normalidad.
+            logger.info(
+                "Sin clave de compartir ubicación heredada configurada: los "
+                "tokens v4.local quedan rechazados. Es el estado esperado una "
+                "vez migrado a data tokens (v4.public)."
+            )
+
+        if any(name == "PASETO_SECRET_KEY" for name, _ in self.keys):
+            logger.warning(
+                "⚠️  PASETO_SECRET_KEY sigue configurada: clave heredada compartida "
+                "con siscom-admin-api. Solo debe estar presente durante la ventana "
+                "de migración; elimínala del entorno para cerrarla."
+            )
+
+    def _decode(self, token: str) -> bytes:
+        """Prueba las claves en orden y devuelve el payload de la primera válida."""
+        if not self.keys:
+            raise InvalidToken("No legacy share-location key configured")
+
+        last_error: Exception | None = None
+
+        for name, key in self.keys:
+            try:
+                payload = pyseto.decode(key, token).payload
+            except Exception as e:  # noqa: PERF203 - probar la siguiente clave
+                last_error = e
+                continue
+
+            if name == "PASETO_SECRET_KEY":
+                logger.warning(
+                    "Token de compartir ubicación validado con la clave heredada "
+                    "PASETO_SECRET_KEY. Emisor pendiente de migrar a "
+                    "SHARE_LOCATION_KEY_B64."
+                )
+            return payload
+
+        logger.warning(f"Token inválido o malformado: {last_error}")
+        raise InvalidToken(f"Invalid or malformed token: {last_error}")
 
     def validate(self, token: str) -> dict[str, Any]:
         """
@@ -72,11 +187,8 @@ class PasetoValidator:
             InvalidToken: Si el token es inválido, corrupto o tiene campos incorrectos
             ExpiredToken: Si el token ha expirado
         """
+        raw_payload = self._decode(token)  # bytes
         try:
-            # Decodificar el token usando el objeto Key
-            decoded = pyseto.decode(self.key, token)
-            # El payload viene como bytes, necesitamos deserializarlo
-            raw_payload = decoded.payload  # bytes
             payload = json.loads(raw_payload.decode("utf-8"))  # dict
         except Exception as e:
             logger.warning(f"Token inválido o malformado: {e}")

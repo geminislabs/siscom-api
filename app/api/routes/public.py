@@ -12,11 +12,19 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from app.api.deps import (
+    ShareGrant,
+    ShareStoreUnavailable,
+    ShareTokenExpired,
+    ShareTokenInvalid,
+    frame_is_within_window,
+    resolve_share_token,
+    translate_ws_message,
+)
 from app.api.routes.stream import ws_broker
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.repository import get_latest_communications
-from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
 
 logger = logging.getLogger(__name__)
 
@@ -85,40 +93,31 @@ async def init_share_location(
     - Información de validez del token, fecha de expiración y última ubicación
     """
     try:
-        # Validar el token
-        payload = paseto_validator.validate(token)
+        grant = await resolve_share_token(token)
+        expires_at = grant.expires_at.isoformat()
 
-        # Extraer información del payload
-        expires_at = payload.get("exp")
-        device_id = payload.get("device_id")
-
-        if not device_id:
-            raise HTTPException(
-                status_code=403, detail="Invalid token: missing device_id"
-            )
-
-        logger.info(
-            f"Token validado exitosamente. Device: {device_id}, Expira en: {expires_at}"
-        )
+        logger.info(f"Enlace de compartir válido. Expira en: {expires_at}")
 
         # Obtener la última comunicación del dispositivo
         async with SessionLocal() as db:
             try:
-                results = await get_latest_communications(db, [device_id])
+                results = await get_latest_communications(db, [grant.device_id])
 
                 if not results or len(results) == 0:
                     # Token válido pero sin datos de ubicación
                     return {
                         "msg": "valid",
                         "expires_at": expires_at,
-                        "device_id": device_id,
+                        "device_id": grant.device_ref,
                         "last_communication": None,
                     }
 
-                # Formatear la última comunicación
+                # Formatear la última comunicación. El identificador sale en el
+                # espacio de la referencia, nunca el interno: un enlace
+                # compartido es público, y el IMEI no debe viajar en él.
                 point = results[0]
                 last_communication = {
-                    "device_id": point.device_id,
+                    "device_id": grant.device_ref,
                     "latitude": float(point.latitude) if point.latitude else None,
                     "longitude": float(point.longitude) if point.longitude else None,
                     "speed": float(point.speed) if point.speed else None,
@@ -148,27 +147,45 @@ async def init_share_location(
                 return {
                     "msg": "valid",
                     "expires_at": expires_at,
-                    "device_id": device_id,
+                    "device_id": grant.device_ref,
                     "last_communication": last_communication,
                 }
 
             except Exception as db_error:
+                # 503, no un 200 con ubicación nula. Devolver "valid" sin datos
+                # es indistinguible de un dispositivo que nunca ha reportado:
+                # quien abre el enlace ve un mapa vacío, concluye que el
+                # rastreador no funciona, y el cliente no tiene forma de saber
+                # que reintentar sirve. Un corte de base de datos es nuestro,
+                # y hay que decirlo.
                 logger.error(f"Error al obtener comunicación: {db_error}")
-                # Token válido pero error al obtener datos
-                return {
-                    "msg": "valid",
-                    "expires_at": expires_at,
-                    "device_id": device_id,
-                    "last_communication": None,
-                }
+                raise HTTPException(
+                    status_code=503, detail="Location data temporarily unavailable"
+                ) from None
 
-    except ExpiredToken:
+    except ShareStoreUnavailable as e:
+        # 503, no 403: el enlace puede ser perfectamente válido; lo que falla
+        # es nuestra capacidad de comprobarlo. Un 403 le diría a quien abre el
+        # enlace que ya no vale, y dejaría de intentarlo.
+        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        raise HTTPException(
+            status_code=503, detail="Authorization store unavailable"
+        ) from None
+
+    except ShareTokenExpired:
         logger.warning("Intento de acceso con token expirado")
         raise HTTPException(status_code=401, detail="Token expired") from None
 
-    except InvalidToken as e:
+    except ShareTokenInvalid as e:
         logger.warning(f"Intento de acceso con token inválido: {str(e)}")
         raise HTTPException(status_code=403, detail="Invalid token") from None
+
+    except HTTPException:
+        # Los códigos deliberados se propagan tal cual. El `except Exception`
+        # de abajo existe para lo imprevisto, no para aplanar una decisión ya
+        # tomada más arriba: sin esto, el 503 de "base de datos caída" salía
+        # como 500 y volvía a mentir sobre qué hacer al respecto.
+        raise
 
     except Exception as e:
         logger.error(f"Error inesperado al validar token: {str(e)}")
@@ -180,43 +197,35 @@ async def init_share_location(
 # ============================================================================
 
 
-async def _validate_share_token(
-    websocket: WebSocket, token: str
-) -> tuple[str, datetime] | None:
+async def _validate_share_token(websocket: WebSocket, token: str) -> ShareGrant | None:
     """
-    Valida el token PASETO y retorna (device_id, expires_at) o None si es inválido.
+    Resuelve el token de compartir y devuelve el alcance concedido.
 
-    Si el token es inválido, cierra el WebSocket automáticamente con código 1008.
+    Si el token es inválido cierra el WebSocket con 1008 **sin aceptarlo**, así
+    que la conexión no llega a establecerse.
 
     Args:
         websocket: Conexión WebSocket
-        token: Token PASETO v4.local a validar
+        token: Token de compartir, en formato data token o heredado
 
     Returns:
-        Tupla (device_id, expires_at) si es válido, None si es inválido
+        El `ShareGrant` si es válido, None si no lo es
     """
     try:
-        payload = paseto_validator.validate(token)
-    except ExpiredToken:
+        return await resolve_share_token(token)
+    except ShareStoreUnavailable as e:
+        # 1013 (Try Again Later): reintentar sirve, pedir otro enlace no.
+        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        await websocket.close(code=1013, reason="Authorization store unavailable")
+        return None
+    except ShareTokenExpired:
         logger.warning("Intento de WebSocket público con token expirado")
         await websocket.close(code=1008, reason="Token expired")
         return None
-    except InvalidToken as e:
+    except ShareTokenInvalid as e:
         logger.warning(f"Intento de WebSocket público con token inválido: {str(e)}")
         await websocket.close(code=1008, reason="Invalid token")
         return None
-
-    device_id = payload.get("device_id")
-    if not device_id:
-        await websocket.close(code=1008, reason="Invalid token: missing device_id")
-        return None
-
-    expires_at_str = payload.get("exp")
-    if not expires_at_str:
-        await websocket.close(code=1008, reason="Invalid token: missing exp")
-        return None
-
-    return device_id, datetime.fromisoformat(expires_at_str)
 
 
 async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
@@ -263,7 +272,7 @@ async def _process_queue_messages(
     websocket: WebSocket,
     queues: list[asyncio.Queue],
     expires_at: datetime,
-    device_id: str,
+    grant: ShareGrant,
 ) -> bool:
     """
     Procesa mensajes de las colas del broker.
@@ -272,11 +281,12 @@ async def _process_queue_messages(
         websocket: Conexión WebSocket
         queues: Colas suscritas al broker
         expires_at: Fecha de expiración del token
-        device_id: ID del dispositivo (para logging)
+        grant: Alcance concedido, con la traducción de identificadores
 
     Returns:
         True si debe terminar el loop, False si debe continuar
     """
+    translation = grant.translation
     if not queues:
         await asyncio.sleep(1)
         return False
@@ -293,7 +303,7 @@ async def _process_queue_messages(
     # Timeout sin mensajes → verificar expiración
     if not done:
         if datetime.now(UTC) >= expires_at:
-            logger.info(f"Token expirado durante WebSocket público: {device_id}")
+            logger.info("Token expirado durante WebSocket público")
             # El task de keep-alive también vigila la expiración y puede haber
             # cerrado el socket antes; toleramos el envío sobre socket cerrado.
             with suppress(Exception):
@@ -307,11 +317,19 @@ async def _process_queue_messages(
     for task in done:
         try:
             event = task.result()
+
+            # La ventana se comprueba por trama: si el equipo se reasigna con
+            # el enlace abierto, deja de emitir en el acto en vez de esperar a
+            # que caduque el token.
+            if not frame_is_within_window(event, translation):
+                logger.info("Trama descartada en enlace compartido: asignación cerrada")
+                continue
+
+            # Un enlace compartido es público: la trama sale con la referencia,
+            # nunca con el identificador interno.
+            event = translate_ws_message(event, translation)
             await websocket.send_json({"event": "message", "data": event})
-            logger.debug(
-                f"Mensaje WebSocket público enviado: "
-                f"{event.get('data', {}).get('DEVICE_ID')}"
-            )
+            logger.debug("Mensaje WebSocket público enviado")
         except Exception as e:
             logger.error(f"Error al procesar mensaje de cola: {e}")
 
@@ -384,19 +402,18 @@ async def websocket_shared_location(
     ```
     """
     # 1. Validar token ANTES de aceptar la conexión
-    result = await _validate_share_token(websocket, token)
-    if result is None:
+    grant = await _validate_share_token(websocket, token)
+    if grant is None:
         return
-    device_id, expires_at = result
+    expires_at = grant.expires_at
 
     # 2. Aceptar conexión WebSocket
     await websocket.accept()
-    logger.info(
-        f"WebSocket público conectado. Device: {device_id}, Expira: {expires_at}"
-    )
+    logger.info(f"WebSocket público conectado. Expira: {expires_at}")
 
-    # 3. Suscribirse al broker para este device_id
-    device_list = [device_id]
+    # 3. Suscribirse al broker por identificador interno, que es con lo que
+    #    llegan los mensajes de Kafka.
+    device_list = [grant.device_id]
     queues = await ws_broker.subscribe(device_list)
 
     # 4. Task para keep-alive con verificación de expiración
@@ -405,12 +422,12 @@ async def websocket_shared_location(
     try:
         while True:
             should_stop = await _process_queue_messages(
-                websocket, queues, expires_at, device_id
+                websocket, queues, expires_at, grant
             )
             if should_stop:
                 break
     except WebSocketDisconnect:
-        logger.info(f"WebSocket público desconectado. Device: {device_id}")
+        logger.info("WebSocket público desconectado")
     except Exception as e:
         logger.error(f"Error en WebSocket público: {e}", exc_info=True)
     finally:
