@@ -68,27 +68,7 @@ Ejemplo para Amazon Linux: ec2-user
 Ejemplo para Debian: admin
 ```
 
-### 6. JWT_SECRET_KEY
-
-```
-Valor: Una clave secreta larga y aleatoria para JWT
-Ejemplo: 09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7
-
-⚠️ DEBE ser diferente en cada ambiente
-⚠️ Mantener segura, nunca compartir
-```
-
-**Generar una clave segura:**
-
-```bash
-# Usando OpenSSL
-openssl rand -hex 32
-
-# Usando Python
-python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-### 7. DOCKER_USERNAME (Opcional)
+### 6. DOCKER_USERNAME (Opcional)
 
 ```
 Valor: Tu usuario de Docker Hub
@@ -96,7 +76,7 @@ Solo necesario si quieres guardar las imágenes en Docker Hub
 Puedes comentar estas líneas en el workflow si no lo usas
 ```
 
-### 8. DOCKER_PASSWORD (Opcional)
+### 7. DOCKER_PASSWORD (Opcional)
 
 ```
 Valor: Token de acceso de Docker Hub
@@ -175,7 +155,6 @@ Descripción: Usuario de la base de datos
 - [ ] EC2_SSH_KEY (incluye BEGIN/END)
 - [ ] EC2_SSH_PORT
 - [ ] EC2_USERNAME
-- [ ] JWT_SECRET_KEY
 
 ### Checklist de Variables
 

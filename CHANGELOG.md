@@ -30,3 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Async/event-loop test failures with TestClient + SQLAlchemy
 - Gitleaks, pip-audit, and OSV-Scanner scripts for CI
+- CI: `greenlet` explícito en `requirements.txt`. El modo asyncio de SQLAlchemy lo exige y dejó de
+  llegar como transitiva: desde el 28/09/2026 `test/conftest.py` no cargaba y el CI no corría ni un
+  test
+- `scripts/pip-audit-scan.sh` funciona con la lista de excepciones vacía también en el bash 3.2 de
+  macOS (con `set -u`, un array vacío daba «unbound variable»)
+
+### Removed
+
+- **JWT, que nunca se usó.** `app/core/security.py` (`create_access_token`, `verify_token`,
+  `get_current_user`) no estaba conectado a ninguna ruta; la autorización real es el data token
+  PASETO v4.public (`require_data_token`) y el PASETO de compartir ubicación. Se quitan el módulo,
+  `JWT_SECRET_KEY`/`JWT_ALGORITHM`/`ACCESS_TOKEN_EXPIRE_MINUTES` (config, `deploy.yml`, CI,
+  `docker-compose.yml`, `.env.example`, scripts y guías) y sus tests. `JWT_SECRET_KEY` tenía `""`
+  por defecto y `docs/API_REST_GUIDE.md` recomendaba conectarlo a las rutas: se elimina antes de que
+  alguien lo hiciera
+- `python-jose`, `types-python-jose`, `passlib` y `types-passlib` de `requirements.txt` (sin uso).
+  Con `python-jose` salen también `ecdsa`, `rsa` y `pyasn1`: se cierran CVE-2026-85394
+  (`python-jose`) y PYSEC-2026-1325 (`ecdsa`, cuya excepción había caducado el 01/10/2026 y volvía a
+  romper `security`)
