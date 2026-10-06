@@ -4,6 +4,7 @@
 
 - **Git tags:** annotated tags `v*.*.*` (e.g. `v1.0.0`)
 - **Changelog:** `CHANGELOG.md` — move `[Unreleased]` entries under the new version header before tagging
+- **`VERSION`:** one line at the repository root, bumped in the same commit as the changelog cut. It is what `GET /health` reports (`app/core/config.py`, `_version_del_repo`). Until v1.3.0 the version was a hardcoded `"0.1.0"` that nobody bumped, so `/health` could not tell which release was running
 
 ## Prerequisites
 
@@ -23,7 +24,8 @@
 2. Prepare changelog (and version notes if applicable):
 
    ```bash
-   git add CHANGELOG.md
+   echo "X.Y.Z" > VERSION
+   git add CHANGELOG.md VERSION
    git commit -m "chore(release): prepare vX.Y.Z"
    git push origin develop
    ```
