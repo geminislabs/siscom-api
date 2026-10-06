@@ -36,6 +36,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar código de la aplicación
 COPY ./app ./app
+# La versión que anuncia /health; ver `_version_del_repo` en app/core/config.py.
+COPY VERSION ./VERSION
 
 # Cambiar propiedad de archivos
 RUN chown -R appuser:appuser /app

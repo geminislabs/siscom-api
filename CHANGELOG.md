@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GET /health` anuncia la versión liberada. Era la constante `APP_VERSION = "0.1.0"`, que nadie
+  actualizaba: con `v1.3.0` desplegada seguía diciendo 0.1.0. Ahora sale del fichero `VERSION` de la
+  raíz, que escribe el commit de release (`docs/RELEASE.md`), igual que en `siscom-admin-api`; el
+  `Dockerfile` lo copia a la imagen. Sin el fichero, `"unknown"`. Se quita `APP_VERSION` de
+  `.env.example`: una variable de entorno se impondría al fichero
+
 ## [1.3.0] - 2026-10-06
 
 ### Fixed
