@@ -15,7 +15,7 @@ bootstrap_test_runtime()
 
 import os
 from collections.abc import AsyncGenerator, Generator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -27,9 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool, StaticPool
 
-from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import create_access_token
 from app.main import app
 from app.models.communications import Base, CommunicationQueclink, CommunicationSuntech
 from app.services.kafka_client import kafka_client
@@ -189,36 +187,6 @@ async def async_client(override_get_db) -> AsyncGenerator:
         yield ac
 
     app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def valid_token() -> str:
-    """JWT válido para tests."""
-    return create_access_token({"sub": "test_user", "user_id": 1})
-
-
-@pytest.fixture
-def expired_token() -> str:
-    """JWT expirado para tests."""
-    data = {"sub": "test_user", "user_id": 1}
-    expire = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=10)
-    data.update({"exp": expire})
-
-    from jose import jwt
-
-    return jwt.encode(data, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
-
-
-@pytest.fixture
-def invalid_token() -> str:
-    """JWT inválido para tests."""
-    return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.invalid.signature"
-
-
-@pytest.fixture
-def auth_headers(valid_token: str) -> dict:
-    """Headers con Bearer token."""
-    return {"Authorization": f"Bearer {valid_token}"}
 
 
 @pytest_asyncio.fixture

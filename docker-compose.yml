@@ -20,9 +20,6 @@ services:
       DB_IDLE_TIMEOUT_SECS: ${DB_IDLE_TIMEOUT_SECS}
 
       # Seguridad JWT (debes configurar esto en tus secrets de GitHub)
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-changeme}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
 
       # Seguridad PASETO
       SHARE_LOCATION_KEY_B64: ${SHARE_LOCATION_KEY_B64:-}

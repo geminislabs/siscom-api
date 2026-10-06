@@ -10,7 +10,6 @@ import pytest
 from fastapi import WebSocketDisconnect
 from starlette.requests import Request
 
-from app.core.security import get_current_user
 from app.services.events_repository import decode_cursor, encode_cursor, get_events
 from app.services.kafka_client import KafkaClient
 from app.utils.metrics import MetricsClient, get_metrics_client
@@ -401,19 +400,6 @@ class TestMiddlewareUnit:
         request = Request(scope)
         response = await middleware.dispatch(request, call_next)
         assert response.status_code == 101
-
-
-@pytest.mark.unit
-class TestSecurityDependency:
-    @pytest.mark.asyncio
-    async def test_get_current_user_returns_payload(self):
-        from app.core.security import create_access_token
-
-        access_token = create_access_token({"sub": "user-1"})
-        credentials = MagicMock()
-        credentials.credentials = access_token
-        payload = await get_current_user(credentials)
-        assert payload["sub"] == "user-1"
 
 
 @pytest.mark.unit

@@ -808,9 +808,7 @@ ws.onmessage = (event) => {
 
 ### Estado Actual
 
-> ⚠️ **Nota importante:** Actualmente **NINGÚN endpoint requiere autenticación**.
->
-> El código de JWT existe en `app/core/security.py` con las funciones `create_access_token()`, `verify_token()` y `get_current_user()`, pero **no están activas** en ninguna ruta.
+> ⚠️ **Nota importante:** con `DATA_TOKEN_ENFORCED=false` (el valor por defecto) **ningún endpoint rechaza peticiones sin token**: los de datos verifican el data token y registran, pero dejan pasar. Ver «Autorización de los endpoints de datos» más abajo.
 
 ### Endpoints Públicos (sin autenticación)
 
@@ -830,27 +828,16 @@ Los siguientes endpoints usan **tokens PASETO v4.local** (emitidos por `siscom-a
 
 Estos tokens se usan para **compartir ubicaciones públicamente** con usuarios externos sin cuenta.
 
-### Agregar Autenticación JWT (opcional)
+### Autorización de los endpoints de datos
 
-Si necesitas proteger los endpoints con JWT, agrega `Depends(get_current_user)` a las rutas:
+`/communications`, `/devices/{id}/communications` y los eventos llevan
+`require_data_token` a nivel de router: un **data token PASETO v4.public**
+(Ed25519) que emite `siscom-admin-api`. Ver `app/core/data_token.py`. Con
+`DATA_TOKEN_ENFORCED=false` —el valor por defecto— se verifica y registra pero
+no se rechaza.
 
-```python
-from app.core.security import get_current_user
-
-@router.get("/communications")
-async def get_communications(
-    device_ids: list[str] = Query(...),
-    db=Depends(get_db),
-    user=Depends(get_current_user),  # ← Agregar esto
-):
-    ...
-```
-
-Luego el cliente debe enviar:
-
-```bash
-Authorization: Bearer <jwt_token>
-```
+Este servicio no tiene autenticación JWT: el módulo `app/core/security.py`
+que esta guía recomendaba conectar nunca se usó en ninguna ruta y se eliminó.
 
 ---
 

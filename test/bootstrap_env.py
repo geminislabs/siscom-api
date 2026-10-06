@@ -8,8 +8,6 @@ _TEST_ENV_DEFAULTS = {
     "DB_USERNAME": "test",
     "DB_PASSWORD": "test",
     "DB_DATABASE": "siscom_test",
-    "JWT_SECRET_KEY": "test-secret-key-for-ci-minimum-32-chars-long",
-    "JWT_ALGORITHM": "HS256",
     "PASETO_SECRET_KEY": "dGVzdC1zZWNyZXQta2V5LWZvci1jaS10ZXN0cy0zMmI=",
     "STATSD_ENABLED": "false",
     "KAFKA_BOOTSTRAP_SERVERS": "localhost:9092",

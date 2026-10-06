@@ -11,14 +11,15 @@ pip install -r requirements.txt >/dev/null
 # Temporary risk acceptances with automatic expiry.
 # Format: "VULN_ID|YYYY-MM-DD|reason"
 # After expiry date, the vulnerability is no longer ignored and CI will re-check it.
-RISK_ACCEPTANCES=(
-	"PYSEC-2026-1325|2026-10-01|No upstream fix available (python-ecdsa timing side-channel advisory)"
-)
+# Vacía desde que se quitó python-jose (y con él ecdsa, PYSEC-2026-1325).
+# Las expansiones `${arr[@]+"${arr[@]}"}` de abajo son a propósito: con `set -u`,
+# un array vacío da «unbound variable» en el bash 3.2 de macOS (no en el de CI).
+RISK_ACCEPTANCES=()
 
 TODAY_UTC="$(date -u +%F)"
 
 PIP_AUDIT_IGNORE_ARGS=()
-for entry in "${RISK_ACCEPTANCES[@]}"; do
+for entry in ${RISK_ACCEPTANCES[@]+"${RISK_ACCEPTANCES[@]}"}; do
 	IFS='|' read -r vuln_id ignore_until reason <<< "$entry"
 
 	# Ignore only while the acceptance window is active.
@@ -28,4 +29,4 @@ for entry in "${RISK_ACCEPTANCES[@]}"; do
 	fi
 done
 
-exec python -m pip_audit -r requirements.txt --desc on "${PIP_AUDIT_IGNORE_ARGS[@]}"
+exec python -m pip_audit -r requirements.txt --desc on ${PIP_AUDIT_IGNORE_ARGS[@]+"${PIP_AUDIT_IGNORE_ARGS[@]}"}

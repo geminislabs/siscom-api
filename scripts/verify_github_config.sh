@@ -46,7 +46,6 @@ SECRETS=(
     "EC2_USERNAME:Usuario SSH (ubuntu, ec2-user, etc.)"
     "EC2_SSH_KEY:Clave privada SSH completa"
     "EC2_SSH_PORT:Puerto SSH (generalmente 22)"
-    "JWT_SECRET_KEY:Clave secreta JWT (mín. 32 caracteres)"
     "PASETO_SECRET_KEY:Clave PASETO v4.local en base64"
 )
 

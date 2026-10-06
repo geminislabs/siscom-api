@@ -17,7 +17,6 @@ Esta guía cubre el despliegue de SISCOM API v1 (REST) en EC2 usando GitHub Acti
    - `EC2_SSH_KEY`: Clave privada SSH para acceso al EC2
    - `EC2_SSH_PORT`: Puerto SSH del EC2 (usualmente 22)
    - `EC2_USERNAME`: Usuario para SSH (ej: ubuntu, ec2-user)
-   - `JWT_SECRET_KEY`: Clave secreta para JWT
    - `PASETO_SECRET_KEY`: Clave secreta para PASETO
    - `KAFKA_USERNAME`: Usuario de Kafka (si usa autenticación)
    - `KAFKA_PASSWORD`: Contraseña de Kafka (si usa autenticación)
@@ -59,7 +58,6 @@ EC2_HOST=tu-servidor.ejemplo.com
 EC2_SSH_KEY=-----BEGIN_[TIPO_DE_CLAVE]_PRIVATE_KEY-----\n<CONTENIDO_REAL_DE_TU_CLAVE_PRIVADA>\n-----END_[TIPO_DE_CLAVE]_PRIVATE_KEY-----
 EC2_SSH_PORT=22
 EC2_USERNAME=ubuntu
-JWT_SECRET_KEY=tu_jwt_secret_muy_seguro_y_largo
 ```
 
 ### Paso 4: Agrega las Variables (pestaña "Variables")
@@ -105,9 +103,6 @@ DB_MIN_CONNECTIONS=10
 DB_MAX_CONNECTIONS=20
 DB_CONNECTION_TIMEOUT_SECS=30
 DB_IDLE_TIMEOUT_SECS=300
-JWT_SECRET_KEY=tu_jwt_secret
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
 ALLOWED_ORIGINS=*
 EOF
 ```
@@ -233,6 +228,5 @@ docker network create siscom-network
 - ✅ La imagen usa multi-stage build para reducir tamaño
 - ✅ Se implementa health check
 - ✅ Pool de conexiones configurado para optimizar recursos
-- ⚠️ Cambia JWT_SECRET_KEY en producción
 - ⚠️ Configura ALLOWED_ORIGINS apropiadamente en producción
 - ⚠️ Considera usar un registry privado para las imágenes

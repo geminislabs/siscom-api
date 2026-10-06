@@ -9,14 +9,14 @@ python-dotenv
 pydantic-settings
 
 # --- Base de datos y ORM ---
+# `greenlet` explícito: el modo asyncio de SQLAlchemy lo exige y ya no llega
+# como transitiva en todas las plataformas. Sin él, `test/conftest.py` no
+# carga y el CI no corre ni un test (falla desde el 28/09/2026).
 SQLAlchemy
+greenlet
 asyncpg      # PostgreSQL async driver
 aiosqlite    # SQLite async driver (for in-memory tests)
 psycopg[binary]
-
-# --- Seguridad y autenticación JWT ---
-python-jose[cryptography]
-passlib[bcrypt]
 
 # --- Seguridad PASETO ---
 pyseto
@@ -39,8 +39,6 @@ pytest-asyncio
 httpx
 
 # --- Tipos opcionales y dev helpers ---
-types-python-jose
-types-passlib
 
 # --- Herramientas de desarrollo y linting ---
 # Versiones FIJAS a propósito. El CI instala desde este fichero y ejecuta
