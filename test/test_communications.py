@@ -20,8 +20,8 @@ class TestCommunicationsEndpointMultiple:
 
         assert response.status_code == 200  # Sin auth implementada aún
 
-    def test_get_communications_with_valid_token(
-        self, client: TestClient, auth_headers: dict, sample_suntech_communication
+    def test_get_communications_returns_200(
+        self, client: TestClient, sample_suntech_communication
     ):
         """
         Test: GET retorna 200 (autenticación opcional por ahora).
@@ -31,30 +31,8 @@ class TestCommunicationsEndpointMultiple:
         assert response.status_code == 200
         assert isinstance(response.json(), list)
 
-    def test_get_communications_with_expired_token(
-        self, client: TestClient, expired_token: str
-    ):
-        """
-        Test: Actualmente NO valida tokens (pendiente implementar).
-        TODO: Cambiar a assert 401 cuando se implemente validación.
-        """
-        response = client.get("/api/v1/communications?device_ids=TEST123")
-
-        assert response.status_code == 200  # Sin validación de tokens aún
-
-    def test_get_communications_with_invalid_token(
-        self, client: TestClient, invalid_token: str
-    ):
-        """
-        Test: Actualmente NO valida tokens (pendiente implementar).
-        TODO: Cambiar a assert 401 cuando se implemente validación.
-        """
-        response = client.get("/api/v1/communications?device_ids=TEST123")
-
-        assert response.status_code == 200  # Sin validación de tokens aún
-
     def test_get_communications_returns_correct_data(
-        self, client: TestClient, auth_headers: dict, sample_suntech_communication
+        self, client: TestClient, sample_suntech_communication
     ):
         """
         Test: Endpoint retorna los datos correctos.
@@ -141,7 +119,7 @@ class TestCommunicationsSingleDeviceEndpoint:
 
         assert response.status_code == 200  # Sin auth implementada aún
 
-    def test_get_device_communications_with_valid_token(
+    def test_get_device_communications_returns_200(
         self, client: TestClient, sample_suntech_communication
     ):
         """

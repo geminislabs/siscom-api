@@ -1,105 +1,14 @@
 """
 Tests adicionales para mejorar code coverage a 65%.
 
-Estos tests se enfocan en código no cubierto: security, config, schemas.
+Estos tests se enfocan en código no cubierto: config, schemas.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
-from jose import jwt
 
 from app.core.config import settings
-from app.core.security import create_access_token, verify_token
-
-
-class TestSecurityCoverage:
-    """Tests para mejorar coverage de app/core/security.py"""
-
-    def test_create_access_token_generates_valid_jwt(self):
-        """Test: create_access_token genera un JWT válido."""
-        data = {"sub": "test_user", "role": "admin"}
-        token = create_access_token(data)
-
-        # El token debe ser un string no vacío
-        assert isinstance(token, str)
-        assert len(token) > 0
-
-        # Debe poder decodificarse
-        decoded = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
-        assert decoded["sub"] == "test_user"
-        assert decoded["role"] == "admin"
-        assert "exp" in decoded
-
-    def test_create_access_token_includes_expiration(self):
-        """Test: Token incluye claim de expiración."""
-        data = {"sub": "user123"}
-        token = create_access_token(data)
-
-        decoded = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
-
-        # Verificar que exp existe y es futuro
-        assert "exp" in decoded
-        exp_datetime = datetime.fromtimestamp(decoded["exp"], tz=UTC).replace(
-            tzinfo=None
-        )
-        now = datetime.now(UTC).replace(tzinfo=None)
-        assert exp_datetime > now
-
-    def test_create_access_token_preserves_custom_claims(self):
-        """Test: Token preserva claims personalizados."""
-        data = {
-            "sub": "user456",
-            "permissions": ["read", "write"],
-            "tenant_id": "tenant-123",
-        }
-        token = create_access_token(data)
-
-        decoded = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-        )
-
-        assert decoded["sub"] == "user456"
-        assert decoded["permissions"] == ["read", "write"]
-        assert decoded["tenant_id"] == "tenant-123"
-
-    def test_verify_token_validates_correct_token(self):
-        """Test: verify_token acepta token válido."""
-        data = {"sub": "test_user", "user_id": 42}
-        token = create_access_token(data)
-
-        payload = verify_token(token)
-
-        assert payload["sub"] == "test_user"
-        assert payload["user_id"] == 42
-
-    def test_verify_token_rejects_invalid_signature(self):
-        """Test: verify_token rechaza token con firma inválida."""
-        from fastapi import HTTPException
-
-        # Token con firma incorrecta
-        fake_token = (
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0In0.invalid_signature"
-        )
-
-        with pytest.raises(HTTPException) as exc_info:
-            verify_token(fake_token)
-
-        assert exc_info.value.status_code == 401
-        assert "Invalid token" in str(exc_info.value.detail)
-
-    def test_verify_token_rejects_malformed_token(self):
-        """Test: verify_token rechaza token malformado."""
-        from fastapi import HTTPException
-
-        with pytest.raises(HTTPException) as exc_info:
-            verify_token("not.a.valid.jwt.token.at.all")
-
-        assert exc_info.value.status_code == 401
 
 
 class TestConfigCoverage:
@@ -118,8 +27,6 @@ class TestConfigCoverage:
         """Test: Settings tiene valores por defecto razonables."""
         assert settings.APP_NAME == "siscom-api"
         assert settings.DB_PORT == 5432
-        assert settings.JWT_ALGORITHM == "HS256"
-        assert settings.ACCESS_TOKEN_EXPIRE_MINUTES == 60
         assert settings.ALLOWED_ORIGINS
         assert settings.STATSD_PORT == 8126
 

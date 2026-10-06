@@ -23,20 +23,6 @@ DB_CONNECTION_TIMEOUT_SECS=30
 DB_IDLE_TIMEOUT_SECS=300
 ```
 
-## Seguridad JWT
-
-```env
-JWT_SECRET_KEY=tu_clave_secreta_super_segura_aqui
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-```
-
-**⚠️ IMPORTANTE**: Genera una clave segura para producción:
-
-```bash
-openssl rand -hex 32
-```
-
 ## CORS (Cross-Origin Resource Sharing)
 
 ```env
@@ -142,11 +128,6 @@ DB_MAX_CONNECTIONS=20
 DB_CONNECTION_TIMEOUT_SECS=30
 DB_IDLE_TIMEOUT_SECS=300
 
-# JWT
-JWT_SECRET_KEY=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
-
 # CORS
 ALLOWED_ORIGINS=*
 
@@ -180,8 +161,6 @@ Si no especificas alguna variable en `.env`, se usarán estos valores por defect
 | `KAFKA_GROUP_ID`               | `siscom-api-consumer` |
 | `KAFKA_AUTO_OFFSET_RESET`      | `latest`          |
 | `ALLOWED_ORIGINS`             | `*`               |
-| `JWT_ALGORITHM`               | `HS256`           |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `60`              |
 
 ## Seguridad
 

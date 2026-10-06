@@ -6,7 +6,7 @@ API FastAPI para gestión de comunicaciones de dispositivos GPS (Suntech y Quecl
 
 - ✅ FastAPI con async/await
 - ✅ PostgreSQL con SQLAlchemy async
-- ✅ Autenticación JWT
+- ✅ Data token PASETO (v4.public) en los endpoints de datos
 - ✅ WebSocket para streaming en tiempo real
 - ✅ Integración Kafka/Redpanda para eventos en tiempo real
 - ✅ Pool de conexiones optimizado
@@ -72,10 +72,6 @@ DB_MIN_CONNECTIONS=10
 DB_MAX_CONNECTIONS=20
 DB_CONNECTION_TIMEOUT_SECS=30
 DB_IDLE_TIMEOUT_SECS=300
-
-JWT_SECRET_KEY=tu_secret_key_super_seguro
-JWT_ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=60
 
 ALLOWED_ORIGINS=*
 
@@ -323,10 +319,12 @@ Ver [KAFKA_INTEGRATION.md](docs/KAFKA_INTEGRATION.md) para más detalles sobre l
 | Endpoint                                         | Método | Auth   | Descripción                          |
 | ------------------------------------------------ | ------ | ------ | ------------------------------------ |
 | `GET /health`                                    | GET    | ❌ No  | Health check del servicio            |
-| `GET /api/v1/communications`                     | GET    | ✅ JWT | Histórico de múltiples dispositivos  |
-| `GET /api/v1/devices/{device_id}/communications` | GET    | ✅ JWT | Histórico de un solo dispositivo     |
+| `GET /api/v1/communications`                     | GET    | Data token¹ | Histórico de múltiples dispositivos  |
+| `GET /api/v1/devices/{device_id}/communications` | GET    | Data token¹ | Histórico de un solo dispositivo     |
 | `WS /api/v1/stream`                              | WS     | ❌ No  | Stream WebSocket con posiciones y alertas |
 | `GET /api/v1/stream/stats`                       | GET    | ❌ No  | Estadísticas del manager WebSocket |
+
+¹ `require_data_token` a nivel de router. Con `DATA_TOKEN_ENFORCED=false` (el valor por defecto) verifica y registra pero **no rechaza**.
 
 ## 🏗️ Arquitectura
 
@@ -339,7 +337,6 @@ siscom-api/
 │   │   ├── config.py        # Configuración
 │   │   ├── database.py      # Conexión a DB
 │   │   ├── middleware.py    # Middleware de métricas
-│   │   └── security.py      # JWT y autenticación
 │   ├── models/              # Modelos SQLAlchemy
 │   ├── schemas/             # Schemas Pydantic
 │   ├── services/
@@ -371,7 +368,7 @@ siscom-api/
 
 ## 🔐 Seguridad
 
-- Autenticación JWT para endpoints protegidos
+- Data token PASETO v4.public (Ed25519) en los endpoints de datos; ver `app/core/data_token.py`
 - Contenedor corre con usuario no privilegiado
 - Secrets manejados con variables de entorno
 - Pool de conexiones con límites configurados
@@ -442,7 +439,7 @@ pytest -m "not slow"      # Excluir tests lentos
 pytest test/test_health.py
 
 # Una clase específica
-pytest test/test_security.py::TestJWTToken
+pytest test/test_data_token.py::TestDataTokenVerification
 
 # Un test específico
 pytest test/test_health.py::TestHealthEndpoint::test_health_check_returns_200
@@ -462,7 +459,6 @@ open htmlcov/index.html       # macOS
 #### Estructura de Tests
 
 - `test/test_health.py` - Tests del health check endpoint
-- `test/test_security.py` - Tests de JWT y autenticación
 - `test/test_communications.py` - Tests de endpoints de comunicaciones
 - `test/test_repository.py` - Tests del servicio de repositorio
 - `test/test_schemas.py` - Tests de schemas Pydantic

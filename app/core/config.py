@@ -21,11 +21,6 @@ class Settings(BaseSettings):
     DB_CONNECTION_TIMEOUT_SECS: int = 30
     DB_IDLE_TIMEOUT_SECS: int = 300
 
-    # Seguridad JWT
-    JWT_SECRET_KEY: str = ""
-    JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
-
     # Seguridad PASETO — tokens de compartir ubicación (v4.local)
     #
     # SHARE_LOCATION_KEY_B64 es la clave dedicada y la única que este servicio

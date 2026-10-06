@@ -36,14 +36,6 @@ class TestSettings:
         assert str(settings.DB_PORT) in db_url
         assert settings.DB_DATABASE in db_url
 
-    def test_jwt_settings_exist(self):
-        """
-        Test: Configuraciones JWT están presentes.
-        """
-        assert settings.JWT_SECRET_KEY is not None
-        assert settings.JWT_ALGORITHM == "HS256"
-        assert settings.ACCESS_TOKEN_EXPIRE_MINUTES > 0
-
     def test_database_pool_settings(self):
         """
         Test: Configuraciones del pool de conexiones son válidas.
