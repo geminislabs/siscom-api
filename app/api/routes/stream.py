@@ -11,6 +11,12 @@ from app.api.deps import (
     translate_ws_message,
 )
 from app.core.config import settings
+from app.observability.metrics import (
+    record_ws_message_dropped,
+    record_ws_message_published,
+    ws_route_label,
+)
+from app.observability.spans import open_ws_session
 from app.services.kafka_client import kafka_client
 from app.utils.metrics import metrics_client
 
@@ -28,12 +34,18 @@ class WebSocketManager:
         self._stats_total_messages = 0
         self._stats_total_subscribers = 0
         self._stats_dropped_messages = 0
+        # Cola → route cerrado (`stream` | `share`). Nunca el device id.
+        self._queue_routes: dict[int, str] = {}
 
-    async def subscribe(self, device_ids: list[str]) -> list[asyncio.Queue]:
+    async def subscribe(
+        self, device_ids: list[str], *, route: str = "stream"
+    ) -> list[asyncio.Queue]:
         """Suscribe una conexión WebSocket a múltiples device_ids."""
         clean_device_ids = [d.strip() for d in device_ids if d and d.strip()]
         # Una cola por socket evita waits innecesarios y simplifica cleanup.
         queue = asyncio.Queue(maxsize=100)
+        route_label = ws_route_label(route)
+        self._queue_routes[id(queue)] = route_label
 
         async with self.lock:
             for dev in clean_device_ids:
@@ -45,8 +57,12 @@ class WebSocketManager:
                     self._stats_total_subscribers += 1
 
             logger.info(
-                f"WebSocket suscrito a {len(clean_device_ids)} devices. "
-                f"Total subscribers activos: {self._stats_total_subscribers}"
+                "ws.subscribed",
+                extra={
+                    "device_count": len(clean_device_ids),
+                    "subscriber_count": self._stats_total_subscribers,
+                    "route": route_label,
+                },
             )
 
         return [queue]
@@ -71,15 +87,21 @@ class WebSocketManager:
                 if not self.subscribers[dev]:
                     del self.subscribers[dev]
 
+            for queue in queues:
+                self._queue_routes.pop(id(queue), None)
+
             logger.info(
-                f"WebSocket desuscrito de {len(clean_device_ids)} devices. "
-                f"Total subscribers activos: {self._stats_total_subscribers}"
+                "ws.unsubscribed",
+                extra={
+                    "device_count": len(clean_device_ids),
+                    "subscriber_count": self._stats_total_subscribers,
+                },
             )
 
     async def publish(self, message: dict, device_id: str):
         """Publica un mensaje hacia todos los sockets suscritos a un device_id."""
         if not device_id:
-            logger.warning(f"Mensaje sin device_id recibido: {message}")
+            logger.warning("ws.publish_missing_device")
             return
 
         self._stats_total_messages += 1
@@ -91,19 +113,23 @@ class WebSocketManager:
 
             dead_queues: list[asyncio.Queue] = []
             for queue in list(subscribers):
+                route_label = self._queue_routes.get(id(queue), "stream")
                 try:
                     if queue.full():
                         self._stats_dropped_messages += 1
+                        record_ws_message_dropped(route_label)
                         logger.warning(
-                            f"Cola llena para device_id {device_id}. "
-                            "Aplicando backpressure (mensaje descartado)"
+                            "ws.queue_full",
+                            extra={"route": route_label},
                         )
                         continue
 
                     queue.put_nowait(message)
+                    record_ws_message_published(route_label)
                 except asyncio.QueueFull:
                     self._stats_dropped_messages += 1
-                    logger.warning(f"Backpressure aplicado para device_id {device_id}")
+                    record_ws_message_dropped(route_label)
+                    logger.warning("ws.queue_full", extra={"route": route_label})
                 except Exception as e:
                     logger.error(f"Error al publicar mensaje: {e}")
                     dead_queues.append(queue)
@@ -189,9 +215,7 @@ async def kafka_message_handler(kafka_event: dict):
             return
 
         if not device_id:
-            logger.warning(
-                f"Mensaje descartado por falta de device_id en topic {topic}: {payload}"
-            )
+            logger.warning("ws.kafka_missing_device")
             return
 
         await ws_broker.publish(ws_message, device_id)
@@ -380,10 +404,16 @@ async def cleanup_websocket_connection(
 @router.websocket("/stream")
 async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
     """Endpoint WebSocket para recibir eventos de dispositivos en tiempo real."""
+    # Un span por conexión, de la entrada al cierre. Cero spans por trama GPS.
+    session = open_ws_session("/api/v1/stream", "stream")
     try:
         # Validar ANTES de aceptar: una conexión que no supera la validación
         # nunca llega a establecerse.
-        requested_refs = await validate_device_ids(websocket, device_ids)
+        try:
+            requested_refs = await validate_device_ids(websocket, device_ids)
+        except WebSocketDisconnect:
+            session.set_outcome("auth_rejected")
+            raise
 
         # Autorizar también antes de aceptar. `subprotocol` hay que devolverlo
         # en el accept: si el cliente ofreció uno y el servidor no hace eco, el
@@ -392,20 +422,22 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
             websocket, requested_refs
         )
         if not authorized:
+            session.set_outcome("auth_rejected")
             raise WebSocketDisconnect(code=1008, reason="Not authorized")
 
         await websocket.accept(subprotocol=subprotocol)
+        session.mark_accepted()
         await metrics_client.increment_active_connections()
 
         # El broker se indexa por identificador interno, que es con lo que
         # llegan los mensajes de Kafka. Las tramas de salida se traducen de
         # vuelta a referencias en `process_websocket_messages`.
         device_list = [translation.id_by_ref.get(ref, ref) for ref in requested_refs]
-        queues = await ws_broker.subscribe(device_list)
+        queues = await ws_broker.subscribe(device_list, route="stream")
 
         logger.info(
-            "✅ WebSocket conectado exitosamente - "
-            f"Device IDs: {device_list} - Cliente: {websocket.client}"
+            "ws.connected",
+            extra={"device_count": len(device_list), "route": "stream"},
         )
 
         connection_active = asyncio.Event()
@@ -415,18 +447,18 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
         await process_websocket_messages(websocket, queues, translation)
 
     except WebSocketDisconnect as disconnect_error:
+        session.note_disconnect()
         logger.info(
-            "📴 WebSocket desconectado normalmente - "
-            f"Device IDs: {device_list if 'device_list' in locals() else 'N/A'} - "
-            f"Código: {disconnect_error.code} - Cliente: {websocket.client}"
+            "ws.disconnected",
+            extra={
+                "route": "stream",
+                "close_code": disconnect_error.code,
+                "device_count": len(device_list) if "device_list" in locals() else 0,
+            },
         )
-    except Exception as e:
-        logger.error(
-            "💥 Error crítico en WebSocket - "
-            f"Device IDs: {device_list if 'device_list' in locals() else 'N/A'} - "
-            f"Cliente: {websocket.client} - Error: {e}",
-            exc_info=True,
-        )
+    except Exception:
+        session.set_outcome("error")
+        logger.error("ws.error", extra={"route": "stream"}, exc_info=True)
     finally:
         if "keepalive_task" in locals():
             await cleanup_websocket_connection(
@@ -440,6 +472,7 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
                 ),
             )
 
+        session.close()
         with suppress(Exception):
             await websocket.close()
 

@@ -6,6 +6,15 @@ class Settings(BaseSettings):
     APP_NAME: str = "siscom-api"
     APP_VERSION: str = "0.1.0"
 
+    # Observabilidad (OTLP). Vacío = telemetría silenciosa: la app arranca y
+    # se comporta igual, y el log JSON a stdout sigue saliendo.
+    # "unknown" a propósito: un default "local" haría que producción se
+    # anunciara como local en /health y en cada traza.
+    OTLP_ENDPOINT: str = ""
+    DEPLOY_ENV: str = "unknown"
+    SERVICE_NAME: str = "siscom-api"
+    LOG_LEVEL: str = "INFO"
+
     # Circuit Breaker/Retry para Kafka
     KAFKA_MAX_RETRIES: int = 5
     KAFKA_CIRCUIT_BREAKER_COOLDOWN: int = 300

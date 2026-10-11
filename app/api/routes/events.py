@@ -15,6 +15,7 @@ from app.api.deps import (
     windows_for_request,
 )
 from app.core.database import get_db
+from app.observability.metrics import record_query_fanout
 from app.schemas.events import EventsPageResponse
 from app.services.events_repository import get_events
 
@@ -89,6 +90,7 @@ async def get_events_handler(  # noqa: PLR0913, PLR0917
     - `EventsPageResponse` con lista de eventos y cursor para la siguiente página (si existe)
     """
     # Un rango entero fuera de ventana no es "no hubo eventos".
+    record_query_fanout("/api/v1/events", len(unit_id))
     raise_if_range_outside_windows(request, [str(u) for u in unit_id], from_dt, to_dt)
 
     try:

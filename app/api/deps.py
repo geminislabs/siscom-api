@@ -40,10 +40,25 @@ from app.core.data_token import (
     data_token_verifier,
 )
 from app.core.scope_window import AccessWindow
+from app.observability.metrics import record_data_token_decision, record_share_access
 from app.services.scope_store import RefKind, ScopeStoreUnavailable, scope_store
 from app.utils.paseto_validator import ExpiredToken, InvalidToken, paseto_validator
 
 logger = logging.getLogger(__name__)
+
+
+def _note_data_token(outcome: str, *, rejected: bool = False) -> None:
+    """Cuenta la decisión. El valor del token no entra al log ni al span."""
+    record_data_token_decision(outcome)
+    if rejected:
+        logger.warning("data_token.rejected", extra={"outcome": outcome})
+
+
+def _note_share(outcome: str, *, rejected: bool = False) -> None:
+    record_share_access(outcome)
+    if rejected:
+        logger.warning("share.rejected", extra={"outcome": outcome})
+
 
 _BEARER_PREFIX = "bearer "
 
@@ -231,6 +246,7 @@ def verify_data_token(token: str | None) -> DataTokenClaims:
     arregla.
     """
     if not token:
+        _note_data_token("missing", rejected=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing data token"
         )
@@ -248,11 +264,12 @@ def verify_data_token(token: str | None) -> DataTokenClaims:
     try:
         return data_token_verifier.verify(token)
     except ExpiredDataToken as e:
+        _note_data_token("expired", rejected=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Data token expired"
         ) from e
     except InvalidDataToken as e:
-        logger.warning(f"Data token rechazado: {e}")
+        _note_data_token("invalid", rejected=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid data token"
         ) from e
@@ -297,6 +314,7 @@ async def resolve_refs(
                 f"Acceso denegado — jti={claims.jti} tipo={kind} "
                 "(referencia no concedida por el scope)"
             )
+            _note_data_token("scope_denied", rejected=True)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
             )
@@ -308,6 +326,7 @@ async def resolve_refs(
                 f"Acceso denegado — jti={claims.jti} tipo={kind} "
                 "(referencia sin ventana de acceso)"
             )
+            _note_data_token("scope_denied", rejected=True)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized"
             )
@@ -378,13 +397,20 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
 
     if not settings.DATA_TOKEN_ENFORCED:
         if token is None:
+            _note_data_token("missing")
             logger.info(f"[observación] petición sin data token: {request.url.path}")
             return None
         try:
             claims = data_token_verifier.verify(token)
-        except Exception as e:
-            logger.warning(f"[observación] data token no verificable: {e}")
+        except ExpiredDataToken:
+            _note_data_token("expired")
+            logger.warning("[observación] data token no verificable")
             return None
+        except Exception:
+            _note_data_token("invalid")
+            logger.warning("[observación] data token no verificable")
+            return None
+        _note_data_token("accepted")
         logger.info(f"[observación] jti={claims.jti} {request.url.path}")
         request.state.ref_translation = await resolve_for_translation(
             claims, collect_requested_refs(request.path_params, request.query_params)
@@ -397,6 +423,7 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
     request.state.ref_translation = await resolve_refs(
         claims, collect_requested_refs(request.path_params, request.query_params)
     )
+    _note_data_token("accepted")
     return claims
 
 
@@ -550,6 +577,7 @@ async def _verify_websocket_claims(
 ) -> DataTokenClaims | tuple[bool, str | None, RefTranslation]:
     """Verifica el token del handshake, o devuelve ya la tupla de rechazo."""
     if not token:
+        _note_data_token("missing", rejected=True)
         return await _reject_websocket(websocket, 1008, "Missing data token")
 
     if not data_token_verifier.is_configured:
@@ -563,9 +591,10 @@ async def _verify_websocket_claims(
     try:
         return data_token_verifier.verify(token)
     except ExpiredDataToken:
+        _note_data_token("expired", rejected=True)
         return await _reject_websocket(websocket, 1008, "Data token expired")
-    except InvalidDataToken as e:
-        logger.warning(f"Data token de ws rechazado: {e}")
+    except InvalidDataToken:
+        _note_data_token("invalid", rejected=True)
         return await _reject_websocket(websocket, 1008, "Invalid data token")
 
 
@@ -593,6 +622,7 @@ async def authorize_websocket(
         if token:
             try:
                 claims = data_token_verifier.verify(token)
+                _note_data_token("accepted")
                 logger.info(f"[observación] ws jti={claims.jti}")
                 # Igual que en HTTP: traducir sí, exigir no. Sin esto, un
                 # cliente que ya manda referencias se suscribiría a un
@@ -600,9 +630,14 @@ async def authorize_websocket(
                 translation = await resolve_for_translation(
                     claims, [("dev", ref) for ref in device_refs]
                 )
-            except Exception as e:
-                logger.warning(f"[observación] data token de ws no verificable: {e}")
+            except ExpiredDataToken:
+                _note_data_token("expired")
+                logger.warning("[observación] data token de ws no verificable")
+            except Exception:
+                _note_data_token("invalid")
+                logger.warning("[observación] data token de ws no verificable")
         else:
+            _note_data_token("missing")
             logger.info("[observación] conexión WebSocket sin data token")
         return True, subprotocol, translation
 
@@ -627,6 +662,7 @@ async def authorize_websocket(
                 f"WebSocket rechazado — jti={claims.jti} "
                 "(referencia no concedida por el scope)"
             )
+            _note_data_token("scope_denied", rejected=True)
             return await _reject_websocket(websocket, 1008, "Not authorized")
 
         internal_id, window = resolved
@@ -639,10 +675,12 @@ async def authorize_websocket(
                 f"WebSocket rechazado — jti={claims.jti} "
                 "(asignación cerrada: sin acceso en vivo)"
             )
+            _note_data_token("scope_denied", rejected=True)
             return await _reject_websocket(websocket, 1008, "Not authorized")
 
         translation.add(ref, internal_id, window)
 
+    _note_data_token("accepted")
     return True, subprotocol, translation
 
 
@@ -790,6 +828,78 @@ class ShareGrant:
         return self._translation
 
 
+async def _resolve_public_share_token(token: str) -> ShareGrant:
+    try:
+        claims = data_token_verifier.verify(token)
+    except ExpiredDataToken as e:
+        _note_share("expired", rejected=True)
+        raise ShareTokenExpired(str(e)) from e
+    except InvalidDataToken as e:
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid(str(e)) from e
+
+    try:
+        resolved = await scope_store.resolve_single(
+            claims.scope_ref, "dev", cache_ceiling(claims)
+        )
+    except ScopeStoreUnavailable as e:
+        # No es un token inválido: es que no podemos comprobarlo.
+        _note_share("unavailable", rejected=True)
+        raise ShareStoreUnavailable(str(e)) from e
+    if resolved is None:
+        logger.warning(f"Enlace de compartir sin alcance resoluble — jti={claims.jti}")
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid("Share scope is empty, revoked or too broad")
+
+    device_ref, device_id, window = resolved
+
+    # Un enlace de un equipo recién reasignado no debe seguir emitiendo.
+    # El `exp` del token no lo cubre: puede quedarle media hora de vida.
+    if not window.allows_now():
+        logger.warning(f"Enlace de compartir con asignación cerrada — jti={claims.jti}")
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid("Device assignment is no longer active")
+
+    logger.info(f"Enlace de compartir válido — jti={claims.jti}")
+    _note_share("ok")
+    return ShareGrant(
+        device_ref, device_id, claims.expires_at, legacy=False, window=window
+    )
+
+
+def _resolve_legacy_share_token(token: str) -> ShareGrant:
+    if not settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN:
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid("Legacy share tokens are no longer accepted")
+
+    try:
+        payload = paseto_validator.validate(token)
+    except ExpiredToken as e:
+        _note_share("expired", rejected=True)
+        raise ShareTokenExpired(str(e)) from e
+    except InvalidToken as e:
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid(str(e)) from e
+
+    device_id = payload.get("device_id")
+    if not device_id:
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid("Missing device_id")
+
+    expires_at_raw = payload.get("exp")
+    if not expires_at_raw:
+        _note_share("invalid", rejected=True)
+        raise ShareTokenInvalid("Missing exp")
+
+    _note_share("ok")
+
+    # En el formato heredado no hay espacio de referencias: el token trae el
+    # IMEI, así que se devuelve tal cual y no hay nada que traducir.
+    return ShareGrant(
+        device_id, device_id, datetime.fromisoformat(expires_at_raw), legacy=True
+    )
+
+
 async def resolve_share_token(token: str) -> ShareGrant:
     """Resuelve un token de compartir ubicación, en cualquiera de sus formatos.
 
@@ -806,64 +916,9 @@ async def resolve_share_token(token: str) -> ShareGrant:
     revés.
     """
     if not token:
+        _note_share("invalid", rejected=True)
         raise ShareTokenInvalid("Empty token")
 
     if token.startswith("v4.public."):
-        try:
-            claims = data_token_verifier.verify(token)
-        except ExpiredDataToken as e:
-            raise ShareTokenExpired(str(e)) from e
-        except InvalidDataToken as e:
-            raise ShareTokenInvalid(str(e)) from e
-
-        try:
-            resolved = await scope_store.resolve_single(
-                claims.scope_ref, "dev", cache_ceiling(claims)
-            )
-        except ScopeStoreUnavailable as e:
-            # No es un token inválido: es que no podemos comprobarlo.
-            raise ShareStoreUnavailable(str(e)) from e
-        if resolved is None:
-            logger.warning(
-                f"Enlace de compartir sin alcance resoluble — jti={claims.jti}"
-            )
-            raise ShareTokenInvalid("Share scope is empty, revoked or too broad")
-
-        device_ref, device_id, window = resolved
-
-        # Un enlace de un equipo recién reasignado no debe seguir emitiendo.
-        # El `exp` del token no lo cubre: puede quedarle media hora de vida.
-        if not window.allows_now():
-            logger.warning(
-                f"Enlace de compartir con asignación cerrada — jti={claims.jti}"
-            )
-            raise ShareTokenInvalid("Device assignment is no longer active")
-
-        logger.info(f"Enlace de compartir válido — jti={claims.jti}")
-        return ShareGrant(
-            device_ref, device_id, claims.expires_at, legacy=False, window=window
-        )
-
-    if not settings.SHARE_LOCATION_ACCEPT_LEGACY_TOKEN:
-        raise ShareTokenInvalid("Legacy share tokens are no longer accepted")
-
-    try:
-        payload = paseto_validator.validate(token)
-    except ExpiredToken as e:
-        raise ShareTokenExpired(str(e)) from e
-    except InvalidToken as e:
-        raise ShareTokenInvalid(str(e)) from e
-
-    device_id = payload.get("device_id")
-    if not device_id:
-        raise ShareTokenInvalid("Missing device_id")
-
-    expires_at_raw = payload.get("exp")
-    if not expires_at_raw:
-        raise ShareTokenInvalid("Missing exp")
-
-    # En el formato heredado no hay espacio de referencias: el token trae el
-    # IMEI, así que se devuelve tal cual y no hay nada que traducir.
-    return ShareGrant(
-        device_id, device_id, datetime.fromisoformat(expires_at_raw), legacy=True
-    )
+        return await _resolve_public_share_token(token)
+    return _resolve_legacy_share_token(token)
