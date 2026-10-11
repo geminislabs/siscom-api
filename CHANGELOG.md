@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-11
+
 ### Added
 
 - Observabilidad OpenTelemetry (`app/observability/`): trazas, logs JSON con `trace_id` y scrubber, e histograma `http_server_duration_milliseconds` con la plantilla de la ruta. Con `OTLP_ENDPOINT` vacío no se exporta nada. StatsD sigue igual y apagado por defecto
