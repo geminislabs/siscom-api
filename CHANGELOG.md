@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-11
+
 ### Security
 
 - El deploy deja de llevar `PASETO_SECRET_KEY` a la EC2. Es la clave con la que siscom-admin-api
