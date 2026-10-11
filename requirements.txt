@@ -51,3 +51,16 @@ ruff==0.16.4
 black==26.5.1
 mypy
 pytest-cov
+
+# --- OpenTelemetry ---
+# Vacío OTLP_ENDPOINT = no se instancian exporters. setuptools fijo: el
+# empaquetado de las instrumentaciones 0.66b0 lo necesita en esta versión.
+opentelemetry-api==1.45.0
+opentelemetry-sdk==1.45.0
+opentelemetry-exporter-otlp-proto-http==1.45.0
+opentelemetry-instrumentation-fastapi==0.66b0
+opentelemetry-instrumentation-sqlalchemy==0.66b0
+opentelemetry-instrumentation-httpx==0.66b0
+opentelemetry-instrumentation-requests==0.66b0
+opentelemetry-instrumentation-logging==0.66b0
+setuptools==84.0.0

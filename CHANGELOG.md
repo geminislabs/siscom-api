@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Observabilidad OpenTelemetry (`app/observability/`): trazas, logs JSON con `trace_id` y scrubber, e histograma `http_server_duration_milliseconds` con la plantilla de la ruta. Con `OTLP_ENDPOINT` vacío no se exporta nada. StatsD sigue igual y apagado por defecto
+- Métricas del plano de datos: sesión WebSocket (`ws_connections`, mensajes publicados y descartados), Kafka (`kafka_messages_total`, `kafka_reconnects_total`, `kafka_circuit_open`), decisión del data token, acceso de compartir ubicación y lookups de Valkey. Un span por conexión, no por mensaje GPS
+- `GET /health` incluye `environment`. CORS acepta `traceparent`, `tracestate` y `x-request-id`
+
 ### Fixed
 
 - `GET /health` anuncia la versión liberada. Era la constante `APP_VERSION = "0.1.0"`, que nadie

@@ -50,6 +50,12 @@ services:
 
       # Streaming WebSocket (keep-alive < idle timeout del proxy/ALB)
       WEBSOCKET_KEEPALIVE_SECS: ${WEBSOCKET_KEEPALIVE_SECS:-25}
+
+      # Observabilidad. Vacío = silencio. El deploy escribe production.
+      DEPLOY_ENV: ${DEPLOY_ENV:-unknown}
+      OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SERVICE_NAME: ${SERVICE_NAME:-siscom-api}
     healthcheck:
       test:
         [

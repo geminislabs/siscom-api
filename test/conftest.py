@@ -96,8 +96,18 @@ async def setup_test_database():
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_communications_tables(setup_test_database):
-    """Limpia tablas antes de cada test para aislar datos."""
+async def reset_communications_tables(request):
+    """Limpia tablas antes de cada test para aislar datos.
+
+    Los tests marcados con ``no_db`` no abren PostgreSQL.
+    """
+    if request.node.get_closest_marker("no_db"):
+        yield
+        return
+
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     async with TestSessionLocal() as session:
         await session.execute(
             text(

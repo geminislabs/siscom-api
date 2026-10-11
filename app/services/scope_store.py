@@ -41,6 +41,8 @@ from redis.asyncio import Redis
 
 from app.core.config import settings
 from app.core.scope_window import AccessWindow, parse_scope_value
+from app.observability.metrics import record_valkey_lookup
+from app.observability.spans import set_span_outcome, valkey_resolve_span
 
 logger = logging.getLogger(__name__)
 
@@ -142,31 +144,46 @@ class ScopeStore:
         """
         cache_key: _CacheKey = (scope_ref, kind, ref)
 
-        cached, value = self._cache_lookup(cache_key)
-        if cached:
-            return parse_scope_value(value) if value is not None else None
+        with valkey_resolve_span() as span:
+            cached, value = self._cache_lookup(cache_key)
+            if cached:
+                parsed = parse_scope_value(value) if value is not None else None
+                outcome = "ok" if parsed is not None else "miss"
+                set_span_outcome(span, outcome)
+                record_valkey_lookup(outcome)
+                return parsed
 
-        client = self._connect()
-        if client is None:
-            raise ScopeStoreUnavailable("VALKEY_URL no configurada")
+            client = self._connect()
+            if client is None:
+                set_span_outcome(span, "unavailable")
+                record_valkey_lookup("unavailable")
+                logger.error("valkey.unavailable")
+                raise ScopeStoreUnavailable("VALKEY_URL no configurada")
 
-        try:
-            resolved = await client.hget(f"dt:scope:{scope_ref}:{kind}", ref)
-        except Exception as e:
-            # Se propaga en vez de devolver None, y sin cachear: un corte no
-            # debe quedar congelado como denegación durante los siguientes
-            # 30 s, ni convertirse en un 403 que le diga al cliente que su
-            # credencial es el problema.
-            logger.error(f"Error resolviendo el scope en Valkey: {e}")
-            raise ScopeStoreUnavailable(str(e)) from e
+            try:
+                resolved = await client.hget(f"dt:scope:{scope_ref}:{kind}", ref)
+            except Exception as e:
+                # Se propaga en vez de devolver None, y sin cachear: un corte no
+                # debe quedar congelado como denegación durante los siguientes
+                # 30 s, ni convertirse en un 403 que le diga al cliente que su
+                # credencial es el problema. El str() no se loguea: puede traer
+                # la URL de Valkey.
+                set_span_outcome(span, "unavailable")
+                record_valkey_lookup("unavailable")
+                logger.error("valkey.unavailable")
+                raise ScopeStoreUnavailable(str(e)) from e
 
-        self._cache_store(
-            cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
-        )
-        # Se cachea el valor CRUDO y se decodifica en cada lectura. Guardar el
-        # objeto ya decodificado ahorraría poco y acoplaría el caché al
-        # formato: si cambia, habría entradas viejas con la forma anterior.
-        return parse_scope_value(resolved) if resolved is not None else None
+            self._cache_store(
+                cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
+            )
+            # Se cachea el valor CRUDO y se decodifica en cada lectura. Guardar el
+            # objeto ya decodificado ahorraría poco y acoplaría el caché al
+            # formato: si cambia, habría entradas viejas con la forma anterior.
+            parsed = parse_scope_value(resolved) if resolved is not None else None
+            outcome = "ok" if parsed is not None else "miss"
+            set_span_outcome(span, outcome)
+            record_valkey_lookup(outcome)
+            return parsed
 
     async def resolve_single(
         self, scope_ref: str, kind: RefKind, max_cache_secs: float
@@ -194,34 +211,48 @@ class ScopeStore:
         """
         cache_key: _CacheKey = (scope_ref, kind, _SINGLE_SENTINEL)
 
-        cached, value = self._cache_lookup(cache_key)
-        if cached:
-            return _decode_single(value)
+        with valkey_resolve_span() as span:
+            cached, value = self._cache_lookup(cache_key)
+            if cached:
+                parsed = _decode_single(value)
+                outcome = "ok" if parsed is not None else "miss"
+                set_span_outcome(span, outcome)
+                record_valkey_lookup(outcome)
+                return parsed
 
-        client = self._connect()
-        if client is None:
-            raise ScopeStoreUnavailable("VALKEY_URL no configurada")
+            client = self._connect()
+            if client is None:
+                set_span_outcome(span, "unavailable")
+                record_valkey_lookup("unavailable")
+                logger.error("valkey.unavailable")
+                raise ScopeStoreUnavailable("VALKEY_URL no configurada")
 
-        try:
-            entries = await client.hgetall(f"dt:scope:{scope_ref}:{kind}")
-        except Exception as e:
-            logger.error(f"Error resolviendo el scope de compartir en Valkey: {e}")
-            raise ScopeStoreUnavailable(str(e)) from e
+            try:
+                entries = await client.hgetall(f"dt:scope:{scope_ref}:{kind}")
+            except Exception as e:
+                set_span_outcome(span, "unavailable")
+                record_valkey_lookup("unavailable")
+                logger.error("valkey.unavailable")
+                raise ScopeStoreUnavailable(str(e)) from e
 
-        resolved: str | None = None
-        if len(entries) == 1:
-            ref, raw_value = next(iter(entries.items()))
-            resolved = f"{ref}\x00{raw_value}"
-        elif len(entries) > 1:
-            logger.error(
-                f"Scope de compartir con {len(entries)} referencias: se esperaba "
-                "exactamente una. Denegado."
+            resolved: str | None = None
+            if len(entries) == 1:
+                ref, raw_value = next(iter(entries.items()))
+                resolved = f"{ref}\x00{raw_value}"
+            elif len(entries) > 1:
+                logger.error(
+                    f"Scope de compartir con {len(entries)} referencias: se esperaba "
+                    "exactamente una. Denegado."
+                )
+
+            self._cache_store(
+                cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
             )
-
-        self._cache_store(
-            cache_key, resolved, min(max_cache_secs, settings.SCOPE_CACHE_TTL_SECS)
-        )
-        return _decode_single(resolved)
+            parsed = _decode_single(resolved)
+            outcome = "ok" if parsed is not None else "miss"
+            set_span_outcome(span, outcome)
+            record_valkey_lookup(outcome)
+            return parsed
 
 
 def _decode_single(cached: str | None) -> tuple[str, str, AccessWindow] | None:

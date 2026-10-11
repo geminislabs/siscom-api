@@ -12,6 +12,7 @@ from app.api.deps import (
     windows_for_request,
 )
 from app.core.database import get_db
+from app.observability.metrics import record_query_fanout
 from app.schemas.communications import (
     CommunicationFullResponse,
     CommunicationLatestResponse,
@@ -65,6 +66,7 @@ async def get_communications_history(  # noqa: B008
     # El histórico se recorta a la ventana de cada dispositivo dentro de la
     # consulta: un equipo reasignado conserva su periodo, no el del dueño
     # siguiente.
+    record_query_fanout("/api/v1/communications", len(device_ids))
     results = await get_communications(
         db,
         internal_ids(request, device_ids),
@@ -184,6 +186,7 @@ async def get_latest_communications_endpoint(  # noqa: B008
     #
     # Si NINGUNO sigue asignado, 404 en vez de lista vacía: una lista vacía
     # afirmaría "estos equipos no tienen posición", que es falso.
+    record_query_fanout("/api/v1/communications/latest", len(device_ids))
     raise_if_no_live_access(request, device_ids)
     results = await get_latest_communications(
         db, live_internal_ids(request, device_ids)

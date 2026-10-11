@@ -24,6 +24,7 @@ from app.api.deps import (
 from app.api.routes.stream import ws_broker
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.observability.spans import open_ws_session
 from app.services.repository import get_latest_communications
 
 logger = logging.getLogger(__name__)
@@ -163,11 +164,11 @@ async def init_share_location(
                     status_code=503, detail="Location data temporarily unavailable"
                 ) from None
 
-    except ShareStoreUnavailable as e:
+    except ShareStoreUnavailable:
         # 503, no 403: el enlace puede ser perfectamente válido; lo que falla
         # es nuestra capacidad de comprobarlo. Un 403 le diría a quien abre el
         # enlace que ya no vale, y dejaría de intentarlo.
-        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        logger.error("share.store_unavailable")
         raise HTTPException(
             status_code=503, detail="Authorization store unavailable"
         ) from None
@@ -176,8 +177,8 @@ async def init_share_location(
         logger.warning("Intento de acceso con token expirado")
         raise HTTPException(status_code=401, detail="Token expired") from None
 
-    except ShareTokenInvalid as e:
-        logger.warning(f"Intento de acceso con token inválido: {str(e)}")
+    except ShareTokenInvalid:
+        logger.warning("Intento de acceso con token inválido")
         raise HTTPException(status_code=403, detail="Invalid token") from None
 
     except HTTPException:
@@ -213,17 +214,17 @@ async def _validate_share_token(websocket: WebSocket, token: str) -> ShareGrant 
     """
     try:
         return await resolve_share_token(token)
-    except ShareStoreUnavailable as e:
+    except ShareStoreUnavailable:
         # 1013 (Try Again Later): reintentar sirve, pedir otro enlace no.
-        logger.error(f"No se pudo comprobar el alcance del enlace: {e}")
+        logger.error("share.store_unavailable")
         await websocket.close(code=1013, reason="Authorization store unavailable")
         return None
     except ShareTokenExpired:
         logger.warning("Intento de WebSocket público con token expirado")
         await websocket.close(code=1008, reason="Token expired")
         return None
-    except ShareTokenInvalid as e:
-        logger.warning(f"Intento de WebSocket público con token inválido: {str(e)}")
+    except ShareTokenInvalid:
+        logger.warning("Intento de WebSocket público con token inválido")
         await websocket.close(code=1008, reason="Invalid token")
         return None
 
@@ -401,37 +402,46 @@ async def websocket_shared_location(
     };
     ```
     """
-    # 1. Validar token ANTES de aceptar la conexión
-    grant = await _validate_share_token(websocket, token)
-    if grant is None:
-        return
-    expires_at = grant.expires_at
-
-    # 2. Aceptar conexión WebSocket
-    await websocket.accept()
-    logger.info(f"WebSocket público conectado. Expira: {expires_at}")
-
-    # 3. Suscribirse al broker por identificador interno, que es con lo que
-    #    llegan los mensajes de Kafka.
-    device_list = [grant.device_id]
-    queues = await ws_broker.subscribe(device_list)
-
-    # 4. Task para keep-alive con verificación de expiración
-    keepalive_task = asyncio.create_task(_send_keepalive(websocket, expires_at))
-
+    # Un span por conexión. El token del query no entra al span.
+    session = open_ws_session("/api/v1/public/share-location/stream", "share")
     try:
-        while True:
-            should_stop = await _process_queue_messages(
-                websocket, queues, expires_at, grant
-            )
-            if should_stop:
-                break
-    except WebSocketDisconnect:
-        logger.info("WebSocket público desconectado")
-    except Exception as e:
-        logger.error(f"Error en WebSocket público: {e}", exc_info=True)
+        # 1. Validar token ANTES de aceptar la conexión
+        grant = await _validate_share_token(websocket, token)
+        if grant is None:
+            session.set_outcome("auth_rejected")
+            return
+        expires_at = grant.expires_at
+
+        # 2. Aceptar conexión WebSocket
+        await websocket.accept()
+        session.mark_accepted()
+        logger.info("ws.connected", extra={"route": "share", "device_count": 1})
+
+        # 3. Suscribirse al broker por identificador interno, que es con lo que
+        #    llegan los mensajes de Kafka.
+        device_list = [grant.device_id]
+        queues = await ws_broker.subscribe(device_list, route="share")
+
+        # 4. Task para keep-alive con verificación de expiración
+        keepalive_task = asyncio.create_task(_send_keepalive(websocket, expires_at))
+
+        try:
+            while True:
+                should_stop = await _process_queue_messages(
+                    websocket, queues, expires_at, grant
+                )
+                if should_stop:
+                    break
+        except WebSocketDisconnect:
+            session.note_disconnect()
+            logger.info("ws.disconnected", extra={"route": "share"})
+        except Exception:
+            session.set_outcome("error")
+            logger.error("ws.error", extra={"route": "share"}, exc_info=True)
+        finally:
+            keepalive_task.cancel()
+            await ws_broker.unsubscribe(device_list, queues)
+            with suppress(Exception):
+                await websocket.close()
     finally:
-        keepalive_task.cancel()
-        await ws_broker.unsubscribe(device_list, queues)
-        with suppress(Exception):
-            await websocket.close()
+        session.close()
