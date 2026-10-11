@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- El deploy deja de llevar `PASETO_SECRET_KEY` a la EC2. Es la clave con la que siscom-admin-api
+  firma sus tokens de servicio `internal-*`: con ella, quien comprometiera este servicio podía
+  emitir credenciales para la API interna. Solo se conservaba para validar enlaces de compartir
+  ubicación firmados antes de la clave dedicada; admin-api firma con `SHARE_LOCATION_KEY_B64`
+  desde el 03/09/2026, esos enlaces vivían 30 minutos y en los últimos 7 días de producción
+  ninguno validó con la clave heredada. El validador ya arranca sin ella; no hay cambio de
+  código. Sale también de `docker-compose.yml`, `.env.example` y la documentación del deploy
+
 ## [1.4.0] - 2026-10-11
 
 ### Added
