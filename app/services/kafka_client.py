@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from kafka import KafkaConsumer
 
 from app.core.config import settings
+from app.observability.metrics import record_kafka_message, record_kafka_reconnect
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,13 @@ class KafkaClient:
         """Procesa un mensaje individual de Kafka."""
         try:
             payload = message.value
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            record_kafka_message(getattr(message, "topic", None), "decode_error")
+            logger.error("kafka.decode_error")
+            return
+
+        record_kafka_message(getattr(message, "topic", None), "ok")
+        try:
             kafka_event = {
                 "topic": message.topic,
                 "payload": payload,
@@ -110,8 +118,6 @@ class KafkaClient:
                 for callback in self._message_callbacks:
                     asyncio.run_coroutine_threadsafe(callback(kafka_event), self._loop)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Error al decodificar mensaje JSON: {e}")
         except Exception as e:
             logger.error(f"Error al procesar mensaje Kafka: {e}")
 
@@ -147,6 +153,7 @@ class KafkaClient:
                     with suppress(Exception):
                         self.consumer.close()
                     self.consumer = None
+                logger.warning("kafka.circuit_open")
                 logger.critical(
                     f"Circuit breaker activado tras {self.max_retries} reintentos fallidos. No se intentará reconectar hasta pasar el cooldown de {self.circuit_breaker_cooldown}s."
                 )
@@ -223,11 +230,17 @@ class KafkaClient:
                     for message in messages:
                         self._process_message(message)
 
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # Un payload ilegible no es una caída del broker: no abre el
+                # circuit breaker ni cuenta como reconexión.
+                record_kafka_message(None, "decode_error")
+                logger.error("kafka.decode_error")
             except Exception as e:
                 self._handle_consumer_error(e)
 
     def _reconnect(self):
         """Intentar reconectar el consumidor Kafka."""
+        was_reconnect = self._reconnect_attempts > 0
         if self._circuit_open:
             cooldown_left = self._circuit_breaker_cooldown_remaining()
             if cooldown_left > 0:
@@ -254,6 +267,11 @@ class KafkaClient:
             self._reconnect_attempts = 0
             self._circuit_open = False
             self._circuit_opened_at = None
+            if was_reconnect:
+                record_kafka_reconnect()
+                logger.info("kafka.reconnected")
+            else:
+                logger.info("kafka.connected")
             logger.info(
                 f"Conectado exitosamente a Kafka/Redpanda {settings.KAFKA_BOOTSTRAP_SERVERS}"
             )
@@ -306,6 +324,7 @@ class KafkaClient:
         if not self._running:
             return
 
+        logger.info("kafka.disconnected")
         logger.info("Desconectando cliente Kafka...")
 
         # Detener el loop de consumo

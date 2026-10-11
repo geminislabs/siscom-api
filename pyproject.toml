@@ -84,6 +84,7 @@ markers = [
     "slow: Slow tests",
     "auth: Authentication tests",
     "database: Database tests",
+    "no_db: tests that do not open PostgreSQL",
 ]
 
 [tool.coverage.run]

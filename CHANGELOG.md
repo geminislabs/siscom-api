@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-11
+
+### Added
+
+- Observabilidad OpenTelemetry (`app/observability/`): trazas, logs JSON con `trace_id` y scrubber, e histograma `http_server_duration_milliseconds` con la plantilla de la ruta. Con `OTLP_ENDPOINT` vacío no se exporta nada. StatsD sigue igual y apagado por defecto
+- Métricas del plano de datos: sesión WebSocket (`ws_connections`, mensajes publicados y descartados), Kafka (`kafka_messages_total`, `kafka_reconnects_total`, `kafka_circuit_open`), decisión del data token, acceso de compartir ubicación y lookups de Valkey. Un span por conexión, no por mensaje GPS
+- `GET /health` incluye `environment`. CORS acepta `traceparent`, `tracestate` y `x-request-id`
+
+### Fixed
+
+- `GET /health` anuncia la versión liberada. Era la constante `APP_VERSION = "0.1.0"`, que nadie
+  actualizaba: con `v1.3.0` desplegada seguía diciendo 0.1.0. Ahora sale del fichero `VERSION` de la
+  raíz, que escribe el commit de release (`docs/RELEASE.md`), igual que en `siscom-admin-api`; el
+  `Dockerfile` lo copia a la imagen. Sin el fichero, `"unknown"`. Se quita `APP_VERSION` de
+  `.env.example`: una variable de entorno se impondría al fichero
+
 ## [1.3.0] - 2026-10-06
 
 ### Fixed

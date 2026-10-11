@@ -2,6 +2,8 @@
 Tests para el endpoint de health check.
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -48,6 +50,18 @@ class TestHealthEndpoint:
         assert "version" in data
         assert isinstance(data["version"], str)
 
+    def test_health_check_version_is_the_release(self, client: TestClient):
+        """
+        Test: la versión es la del fichero VERSION que escribe el commit de
+        release, no una constante. Antes decía 0.1.0 con v1.3.0 desplegada.
+        """
+        version = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
+
+        data = client.get("/health").json()
+
+        assert data["version"] == version
+        assert data["version"] != "0.1.0"
+
     def test_health_check_response_format(self, client: TestClient):
         """
         Test: Health check retorna el formato correcto.
@@ -55,7 +69,13 @@ class TestHealthEndpoint:
         response = client.get("/health")
         data = response.json()
 
-        expected_keys = {"status", "service", "version", "kafka_circuit_breaker"}
+        expected_keys = {
+            "status",
+            "service",
+            "version",
+            "environment",
+            "kafka_circuit_breaker",
+        }
         assert set(data.keys()) == expected_keys
 
     def test_health_check_no_auth_required(self, client: TestClient):
