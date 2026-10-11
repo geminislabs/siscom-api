@@ -17,7 +17,7 @@ Esta guía cubre el despliegue de SISCOM API v1 (REST) en EC2 usando GitHub Acti
    - `EC2_SSH_KEY`: Clave privada SSH para acceso al EC2
    - `EC2_SSH_PORT`: Puerto SSH del EC2 (usualmente 22)
    - `EC2_USERNAME`: Usuario para SSH (ej: ubuntu, ec2-user)
-   - `PASETO_SECRET_KEY`: Clave secreta para PASETO
+   - `SHARE_LOCATION_KEY_B64`: Clave dedicada de compartir ubicación (PASETO v4.local, 32 bytes en base64)
    - `KAFKA_USERNAME`: Usuario de Kafka (si usa autenticación)
    - `KAFKA_PASSWORD`: Contraseña de Kafka (si usa autenticación)
    - `DOCKER_USERNAME`: (Opcional) Usuario de Docker Hub

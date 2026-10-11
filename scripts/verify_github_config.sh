@@ -46,7 +46,7 @@ SECRETS=(
     "EC2_USERNAME:Usuario SSH (ubuntu, ec2-user, etc.)"
     "EC2_SSH_KEY:Clave privada SSH completa"
     "EC2_SSH_PORT:Puerto SSH (generalmente 22)"
-    "PASETO_SECRET_KEY:Clave PASETO v4.local en base64"
+    "SHARE_LOCATION_KEY_B64:Clave dedicada de compartir ubicación (PASETO v4.local, 32 bytes en base64)"
 )
 
 for secret_info in "${SECRETS[@]}"; do
