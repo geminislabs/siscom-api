@@ -1,10 +1,29 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _version_del_repo() -> str:
+    """Lee `VERSION` de la raíz del repositorio.
+
+    Lo escribe el commit de release junto al corte del CHANGELOG (ver
+    `docs/RELEASE.md`), igual que en `siscom-admin-api`. Antes la versión era
+    una constante `"0.1.0"` que nadie tocaba: `/health` decía 0.1.0 con
+    `v1.3.0` desplegada. Si el fichero no está o está vacío, `"unknown"`:
+    declarar que no se sabe, nunca inventarse un número.
+    """
+    try:
+        ruta = Path(__file__).resolve().parents[2] / "VERSION"
+        texto = ruta.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+    return texto or "unknown"
 
 
 class Settings(BaseSettings):
     # Información de la aplicación
     APP_NAME: str = "siscom-api"
-    APP_VERSION: str = "0.1.0"
+    APP_VERSION: str = _version_del_repo()
 
     # Circuit Breaker/Retry para Kafka
     KAFKA_MAX_RETRIES: int = 5
