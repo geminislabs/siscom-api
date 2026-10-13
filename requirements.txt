@@ -47,17 +47,17 @@ httpx
 # ruff 0.16, que estabilizó PLR0917 y empezó a marcar funciones que llevaban
 # meses en `develop`. Subir la versión debe ser un cambio deliberado y visible
 # en el diff, no un efecto secundario del día en que corre el CI.
-ruff==0.16.4
-black==26.5.1
+ruff==0.17.0
+black==26.10.1
 mypy
 pytest-cov
 
 # --- OpenTelemetry ---
 # Vacío OTLP_ENDPOINT = no se instancian exporters. setuptools fijo: el
 # empaquetado de las instrumentaciones 0.66b0 lo necesita en esta versión.
-opentelemetry-api==1.45.0
-opentelemetry-sdk==1.45.0
-opentelemetry-exporter-otlp-proto-http==1.45.0
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
 opentelemetry-instrumentation-fastapi==0.66b0
 opentelemetry-instrumentation-sqlalchemy==0.66b0
 opentelemetry-instrumentation-httpx==0.66b0
