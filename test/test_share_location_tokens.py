@@ -81,6 +81,11 @@ class _FakeScopeStore:
         self.entries = {_REF: _IMEI} if entries is None else entries
         self.window = AccessWindow.always() if window is None else window
 
+        self.revoked: set[str] = set()
+
+    async def is_revoked(self, scope_ref):
+        return scope_ref in self.revoked
+
     async def resolve_single(self, scope_ref, kind, max_cache_secs):
         if scope_ref != _SCOPE or len(self.entries) != 1:
             return None
@@ -125,6 +130,18 @@ class TestDataTokenFormat:
         assert grant.device_id == _IMEI
         assert grant.device_ref == _REF
         assert not grant.legacy
+        assert grant.scope_ref == _SCOPE
+
+    async def test_a_revoked_link_is_rejected_at_once(self, share_env, monkeypatch):
+        """NEXUS-S2-03: revocar no espera a la caché ni al `exp`."""
+        from app.api.deps import ShareTokenInvalid
+
+        share_env()
+        from app.api import deps
+
+        deps.scope_store.revoked.add(_SCOPE)
+        with pytest.raises(ShareTokenInvalid):
+            await resolve_share_token(_data_token())
 
     async def test_the_token_itself_carries_no_imei(self, share_env):
         """En v4.public la carga va firmada pero EN CLARO.
@@ -242,6 +259,9 @@ class TestShareStoreOutage:
 
         class _DownStore:
             async def resolve_single(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
+            async def is_revoked(self, *args, **kwargs):
                 raise ScopeStoreUnavailable("Valkey no disponible")
 
         share_env()

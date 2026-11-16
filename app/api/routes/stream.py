@@ -7,8 +7,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.api.deps import (
     RefTranslation,
     authorize_websocket,
+    frame_is_exposed,
     frame_is_within_window,
+    redact_shared_frame,
     translate_ws_message,
+    websocket_revocation_reason,
 )
 from app.core.config import settings
 from app.observability.metrics import (
@@ -283,6 +286,20 @@ async def create_keepalive_task(
     return asyncio.create_task(send_keepalive())
 
 
+async def revalidation_watchdog(translation: RefTranslation) -> tuple[int, str]:
+    """Vigila la revocación de una conexión abierta.
+
+    Termina, devolviendo `(código, motivo)`, en cuanto la conexión deja de
+    estar autorizada. Sin esto, revocar un permiso compartido no cortaría el
+    stream hasta que el cliente se reconectara.
+    """
+    while True:
+        await asyncio.sleep(settings.SCOPE_REVALIDATE_SECS)
+        reason = await websocket_revocation_reason(translation)
+        if reason is not None:
+            return reason
+
+
 async def _deliver_event(
     websocket: WebSocket, task: asyncio.Future, translation: RefTranslation | None
 ) -> None:
@@ -303,6 +320,12 @@ async def _deliver_event(
             if not frame_is_within_window(event, translation):
                 logger.debug("Trama descartada: asignación cerrada durante la conexión")
                 return
+            # Una unidad compartida es solo telemetría: ni alertas ni campos
+            # de alerta dentro de las posiciones.
+            if not frame_is_exposed(event, translation):
+                logger.debug("Alerta descartada: unidad compartida")
+                return
+            event = redact_shared_frame(event, translation)
             event = translate_ws_message(event, translation)
 
         await websocket.send_json({"event": event_name, "data": event})
@@ -317,8 +340,12 @@ async def process_websocket_messages(
     websocket: WebSocket,
     queues: list[asyncio.Queue],
     translation: RefTranslation | None = None,
+    watchdog: asyncio.Task | None = None,
 ) -> None:
     """Consume la cola del socket y envía eventos al cliente.
+
+    `watchdog`, si se pasa, es una task que termina cuando la conexión debe
+    cerrarse (revocación, vencimiento); su resultado es `(código, motivo)`.
 
     Lee el WebSocket en paralelo (`websocket.receive()`) para detectar la
     desconexión del cliente de inmediato aunque no fluyan mensajes. Sin esto,
@@ -335,15 +362,24 @@ async def process_websocket_messages(
             # Sin timeout: el keep-alive corre en otra task, así que aquí solo
             # despertamos cuando hay un mensaje de cola o el cliente se
             # desconecta (receive_task). Evita churn periódico con muchas conns.
+            watched = [watchdog] if watchdog is not None else []
             done, pending = await asyncio.wait(
-                [receive_task, *queue_tasks],
+                [receive_task, *watched, *queue_tasks],
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # Cancelar solo las lecturas de cola pendientes; nunca receive_task.
+            # Cancelar solo las lecturas de cola pendientes; nunca receive_task
+            # ni el watchdog.
             for task in pending:
-                if task is not receive_task:
+                if task is not receive_task and task is not watchdog:
                     task.cancel()
+
+            if watchdog is not None and watchdog in done:
+                code, reason = watchdog.result()
+                logger.warning(f"WebSocket cerrado por revalidación ({code}): {reason}")
+                with suppress(Exception):
+                    await websocket.close(code=code, reason=reason)
+                raise WebSocketDisconnect(code=code, reason=reason)
 
             # ¿Cliente desconectado o envió un frame? Detectarlo de inmediato.
             # Guardamos la referencia a la task completada ANTES de re-armar,
@@ -371,13 +407,17 @@ async def process_websocket_messages(
                 receive_task = asyncio.ensure_future(websocket.receive())
 
             for task in done:
-                if task is completed_receive:
+                if task is completed_receive or task is watchdog:
                     continue
                 await _deliver_event(websocket, task, translation)
     finally:
         receive_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await receive_task
+        if watchdog is not None:
+            watchdog.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await watchdog
 
 
 async def cleanup_websocket_connection(
@@ -444,7 +484,12 @@ async def websocket_stream(websocket: WebSocket, device_ids: str | None = None):
         connection_active.set()
 
         keepalive_task = await create_keepalive_task(websocket, connection_active)
-        await process_websocket_messages(websocket, queues, translation)
+        watchdog = (
+            asyncio.create_task(revalidation_watchdog(translation))
+            if translation.claims is not None
+            else None
+        )
+        await process_websocket_messages(websocket, queues, translation, watchdog)
 
     except WebSocketDisconnect as disconnect_error:
         session.note_disconnect()

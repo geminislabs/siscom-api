@@ -101,6 +101,13 @@ class AccessWindow:
 
     intervals: tuple[Interval, ...]
 
+    # Acceso de **solo telemetría** (contrato v1.4, NEXUS-S2-03). Lo lleva una
+    # unidad que otro equipo comparte con quien pregunta: puede ver posiciones
+    # e histórico dentro de su ventana, pero nunca alertas, eventos ni nada que
+    # no sea la propia telemetría. Viaja con la ventana porque los dos salen
+    # del mismo valor del hash y los dos hacen falta al servir la respuesta.
+    shared: bool = False
+
     @classmethod
     def always(cls) -> AccessWindow:
         """Acceso sin límite temporal, el comportamiento anterior a v1.3."""
@@ -151,6 +158,11 @@ class AccessWindow:
 # ── Decodificación del valor del hash ───────────────────────────────────────
 
 
+ACCESS_FULL = "full"
+ACCESS_SHARED = "shared"
+_KNOWN_ACCESS = frozenset({ACCESS_FULL, ACCESS_SHARED})
+
+
 def _parse_instant(raw) -> datetime | None:
     if raw in (None, ""):
         return None
@@ -191,6 +203,16 @@ def parse_scope_value(raw: str) -> tuple[str, AccessWindow] | None:
     parser no puede confundirlos ni por descuido, que es justo lo que protege
     contra el fallo del ``or`` descrito en `AccessWindow.none()`.
 
+    Desde v1.4 el valor puede llevar además ``access``:
+
+    - ``"full"`` (o ausente): la unidad es del alcance, acceso completo.
+    - ``"shared"``: la unidad la comparte otro equipo. Solo telemetría, y
+      solo dentro de ``windows`` — que para un permiso compartido es la
+      vigencia del propio permiso.
+
+    Cualquier otro valor de ``access`` no es interpretable y se deniega: un
+    nivel nuevo que este servicio no conoce no puede degradar a "completo".
+
     Se sigue aceptando el identificador a secas, sin JSON, porque es lo que
     había antes de v1.3: un valor sin migrar se comporta como siempre en vez de
     denegar de golpe.
@@ -224,7 +246,12 @@ def parse_scope_value(raw: str) -> tuple[str, AccessWindow] | None:
             Interval(_parse_instant(w.get("from")), _parse_instant(w.get("to")))
             for w in raw_windows
         )
+
+        access = payload.get("access", ACCESS_FULL)
+        if access not in _KNOWN_ACCESS:
+            # Cae en el `except`: no interpretable, denegado.
+            raise ValueError(f"Unknown access level: {access!r}")
     except Exception:
         return None
 
-    return internal_id, AccessWindow(intervals)
+    return internal_id, AccessWindow(intervals, shared=access == ACCESS_SHARED)

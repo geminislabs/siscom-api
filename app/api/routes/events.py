@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import (
     internal_ids,
+    raise_if_any_shared,
     raise_if_range_outside_windows,
     require_data_token,
     windows_for_request,
@@ -89,6 +90,8 @@ async def get_events_handler(  # noqa: PLR0913, PLR0917
     **Returns:**
     - `EventsPageResponse` con lista de eventos y cursor para la siguiente página (si existe)
     """
+    # Los eventos son alertas: una unidad compartida es solo telemetría.
+    raise_if_any_shared(request, [str(u) for u in unit_id])
     # Un rango entero fuera de ventana no es "no hubo eventos".
     record_query_fanout("/api/v1/events", len(unit_id))
     raise_if_range_outside_windows(request, [str(u) for u in unit_id], from_dt, to_dt)

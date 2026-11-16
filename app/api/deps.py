@@ -103,6 +103,12 @@ class RefTranslation:
         # la traducción porque los dos salen del mismo `HGET` y los dos hacen
         # falta al servir la respuesta.
         self.window_by_id: dict[str, AccessWindow] = {}
+        # Identificadores de unidades COMPARTIDAS por otro equipo: solo
+        # telemetría. Se consulta al servir, para no exponer alertas ni eventos.
+        self.shared_ids: set[str] = set()
+        # Claims del token que autorizó la traducción. Hace falta en el
+        # WebSocket para revalidar periódicamente la revocación.
+        self.claims: DataTokenClaims | None = None
 
     def add(
         self, ref: str, internal_id: str, window: AccessWindow | None = None
@@ -116,6 +122,16 @@ class RefTranslation:
         self.window_by_id[internal_id] = (
             AccessWindow.always() if window is None else window
         )
+        if window is not None and window.shared:
+            self.shared_ids.add(internal_id)
+
+    def is_shared(self, internal_id: str) -> bool:
+        """¿Es una unidad compartida (solo telemetría)?
+
+        Como las ventanas, solo cuenta con la exigencia activa: en observación
+        no se cambia ninguna respuesta.
+        """
+        return self.enforcing and internal_id in self.shared_ids
 
     def window_for(self, internal_id: str) -> AccessWindow:
         """Ventana del identificador, o sin límite si no hay traducción activa.
@@ -285,6 +301,29 @@ def cache_ceiling(claims: DataTokenClaims) -> float:
     return min(float(settings.SCOPE_CACHE_TTL_SECS), claims.seconds_until_expiry())
 
 
+async def ensure_not_revoked(claims: DataTokenClaims) -> None:
+    """Rechaza el token si admin-api ha revocado su alcance.
+
+    Se comprueba en cada petición y sin caché: es lo que hace **inmediata** la
+    pausa, revocación o vencimiento de un permiso compartido. 401 y no 403: el
+    token entero dejó de valer, y el cliente debe pedir uno nuevo, que ya
+    saldrá calculado con el alcance reducido.
+    """
+    try:
+        revoked = await scope_store.is_revoked(claims.scope_ref)
+    except ScopeStoreUnavailable as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authorization store unavailable",
+        ) from e
+
+    if revoked:
+        logger.warning(f"Data token revocado — jti={claims.jti}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Data token revoked"
+        )
+
+
 async def resolve_refs(
     claims: DataTokenClaims, requested: list[tuple[RefKind, str]]
 ) -> RefTranslation:
@@ -419,6 +458,7 @@ async def require_data_token(request: Request) -> DataTokenClaims | None:
 
     claims = verify_data_token(token)
     logger.info(f"jti={claims.jti} {request.method} {request.url.path}")
+    await ensure_not_revoked(claims)
 
     request.state.ref_translation = await resolve_refs(
         claims, collect_requested_refs(request.path_params, request.query_params)
@@ -548,19 +588,55 @@ def raise_if_date_outside_windows(request: Request, refs: list[str], instant) ->
     _raise_unless_any(request, refs, lambda window: window.covers_instant(instant))
 
 
+def raise_if_any_shared(request: Request, refs: list[str]) -> None:
+    """403 si alguna referencia pedida es una unidad compartida.
+
+    Para los endpoints que no son telemetría (eventos, alertas). Se rechaza la
+    petición entera en vez de filtrar: quien pregunta ya sabe qué unidades le
+    comparten, así que no hay oráculo que proteger, y un 200 parcial ocultaría
+    que esas unidades nunca van a devolver eventos.
+    """
+    translation = translation_of(request)
+    if not translation or not translation.enforcing:
+        return
+
+    if any(translation.is_shared(translation.id_by_ref.get(ref, ref)) for ref in refs):
+        logger.warning(
+            "Acceso denegado — recurso no disponible para unidades compartidas"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not available for shared units",
+        )
+
+
+# Campos que nunca salen de una unidad compartida. Los comandos (apagado de
+# motor) no existen en este servicio; las alertas y los datos de cuenta sí
+# viajan con la telemetría y hay que quitarlos al servir.
+_SHARED_REDACTED_FIELDS = ("alert_type",)
+
+
 def to_external_models(request: Request, models: list) -> list:
     """Devuelve los modelos con `device_id` traducido al espacio externo.
 
     Regla del contrato: la respuesta sale en el mismo espacio en el que entró la
     petición. Sin traducción activa, los modelos se devuelven intactos.
+
+    Las filas de unidades compartidas salen además sin los campos de alerta.
     """
     translation = translation_of(request)
     if not translation:
         return models
-    return [
-        model.model_copy(update={"device_id": translation.to_external(model.device_id)})
-        for model in models
-    ]
+
+    result = []
+    for model in models:
+        update = {"device_id": translation.to_external(model.device_id)}
+        if translation.is_shared(model.device_id):
+            update.update(
+                {f: None for f in _SHARED_REDACTED_FIELDS if hasattr(model, f)}
+            )
+        result.append(model.model_copy(update=update))
+    return result
 
 
 async def _reject_websocket(
@@ -589,13 +665,31 @@ async def _verify_websocket_claims(
         return await _reject_websocket(websocket, 1013, "Data plane not configured")
 
     try:
-        return data_token_verifier.verify(token)
+        claims = data_token_verifier.verify(token)
     except ExpiredDataToken:
         _note_data_token("expired", rejected=True)
         return await _reject_websocket(websocket, 1008, "Data token expired")
     except InvalidDataToken:
         _note_data_token("invalid", rejected=True)
         return await _reject_websocket(websocket, 1008, "Invalid data token")
+
+    return await _reject_if_revoked(websocket, claims)
+
+
+async def _reject_if_revoked(
+    websocket: WebSocket, claims: DataTokenClaims
+) -> DataTokenClaims | tuple[bool, str | None, RefTranslation]:
+    """La revocación se comprueba sin caché también en el handshake: un token
+    revocado no debe poder abrir un stream nuevo."""
+    try:
+        revoked = await scope_store.is_revoked(claims.scope_ref)
+    except ScopeStoreUnavailable:
+        return await _reject_websocket(
+            websocket, 1013, "Authorization store unavailable"
+        )
+    if revoked:
+        return await _reject_websocket(websocket, 1008, "Data token revoked")
+    return claims
 
 
 async def authorize_websocket(
@@ -648,6 +742,7 @@ async def authorize_websocket(
 
     logger.info(f"ws jti={claims.jti} refs={len(device_refs)}")
 
+    translation.claims = claims
     ceiling = cache_ceiling(claims)
     for ref in device_refs:
         try:
@@ -707,6 +802,77 @@ def frame_is_within_window(message, translation: RefTranslation) -> bool:
         return True
 
     return translation.window_for(device_id).allows_now()
+
+
+async def websocket_revocation_reason(
+    translation: RefTranslation, now: datetime | None = None
+) -> tuple[int, str] | None:
+    """Revalida una conexión WebSocket abierta.
+
+    Devuelve `(código, motivo)` si hay que cerrarla, o `None` si sigue vigente.
+    Sin claims (modo observación) no hay nada que revalidar.
+
+    - Token vencido o alcance revocado → 1008: la credencial dejó de valer, el
+      cliente pide otra y se reconecta con el alcance recalculado.
+    - Valkey inaccesible → 1013: fail closed, pero diciendo que el problema es
+      de este servicio.
+    """
+    claims = translation.claims
+    if claims is None or not translation.enforcing:
+        return None
+
+    if claims.seconds_until_expiry(now) <= 0:
+        return 1008, "Data token expired"
+
+    try:
+        if await scope_store.is_revoked(claims.scope_ref):
+            logger.warning(f"WebSocket cerrado por revocación — jti={claims.jti}")
+            return 1008, "Data token revoked"
+    except ScopeStoreUnavailable:
+        return 1013, "Authorization store unavailable"
+
+    return None
+
+
+def frame_is_exposed(message, translation: RefTranslation) -> bool:
+    """¿Puede esta trama salir hacia el suscriptor?
+
+    Las alertas de una unidad compartida no salen nunca: el permiso compartido
+    es solo de telemetría.
+    """
+    if not translation or not translation.enforcing:
+        return True
+    if not isinstance(message, dict) or message.get("message_type") != "alert":
+        return True
+
+    device_id = _first_device_id(message)
+    # Una alerta sin identificador no se puede atribuir: si el socket tiene
+    # alguna unidad compartida, no se arriesga.
+    if device_id is None:
+        return not translation.shared_ids
+    return not translation.is_shared(device_id)
+
+
+def redact_shared_frame(message, translation: RefTranslation):
+    """Quita los campos de alerta de las tramas de unidades compartidas."""
+    if not translation or not translation.shared_ids or not translation.enforcing:
+        return message
+    device_id = _first_device_id(message)
+    if device_id is not None and not translation.is_shared(device_id):
+        return message
+    return _strip_fields(message, _SHARED_REDACTED_FIELDS)
+
+
+def _strip_fields(message, fields):
+    if isinstance(message, dict):
+        return {
+            key: _strip_fields(value, fields)
+            for key, value in message.items()
+            if key not in fields
+        }
+    if isinstance(message, list):
+        return [_strip_fields(item, fields) for item in message]
+    return message
 
 
 def _first_device_id(message):
@@ -792,15 +958,19 @@ class ShareGrant:
     porque el token viejo transporta el IMEI directamente.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — todos son parte del alcance concedido
         self,
         device_ref: str,
         device_id: str,
         expires_at,
         legacy: bool,
         window: AccessWindow | None = None,
+        scope_ref: str | None = None,
     ):
         self.device_ref = device_ref
+        # Para revalidar la revocación con el enlace abierto. `None` en el
+        # formato heredado, que no tiene alcance en Valkey.
+        self.scope_ref = scope_ref
         self.device_id = device_id
         self.expires_at = expires_at
         self.legacy = legacy
@@ -813,10 +983,10 @@ class ShareGrant:
 
         # Se fija al conceder, no por trama: el alcance de una conexión no
         # cambia mientras el token siga vivo, así que resolverlo una vez en el
-        # handshake evita ir a Valkey por cada posición del stream. La
-        # contrapartida es que "dejar de compartir" no corta las conexiones ya
-        # abiertas; el techo de esa latencia es el `exp`, porque el keep-alive
-        # cierra el socket al vencer (ver `_send_keepalive` en public.py).
+        # handshake evita ir a Valkey por cada posición del stream. "Dejar de
+        # compartir" corta igualmente las conexiones abiertas: el keep-alive
+        # revalida la revocación en cada ciclo (ver `_send_keepalive` en
+        # public.py).
         self._translation = RefTranslation()
         if not legacy:
             # En el formato heredado no hay espacio de referencias que traducir.
@@ -839,6 +1009,12 @@ async def _resolve_public_share_token(token: str) -> ShareGrant:
         raise ShareTokenInvalid(str(e)) from e
 
     try:
+        # Sin caché: dejar de compartir corta el enlace en la siguiente
+        # apertura, no 30 s después.
+        if await scope_store.is_revoked(claims.scope_ref):
+            logger.warning(f"Enlace de compartir revocado — jti={claims.jti}")
+            _note_share("invalid", rejected=True)
+            raise ShareTokenInvalid("Share link has been revoked")
         resolved = await scope_store.resolve_single(
             claims.scope_ref, "dev", cache_ceiling(claims)
         )
@@ -863,7 +1039,12 @@ async def _resolve_public_share_token(token: str) -> ShareGrant:
     logger.info(f"Enlace de compartir válido — jti={claims.jti}")
     _note_share("ok")
     return ShareGrant(
-        device_ref, device_id, claims.expires_at, legacy=False, window=window
+        device_ref,
+        device_id,
+        claims.expires_at,
+        legacy=False,
+        window=window,
+        scope_ref=claims.scope_ref,
     )
 
 

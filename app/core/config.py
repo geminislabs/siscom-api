@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # nunca la vigencia del propio token.
     SCOPE_CACHE_TTL_SECS: int = 30
 
+    # Cada cuánto se revalida la revocación de un WebSocket abierto. Es el
+    # techo de latencia de una revocación sobre una conexión ya establecida;
+    # en HTTP la comprobación es por petición y no tiene retraso.
+    SCOPE_REVALIDATE_SECS: int = 10
+
     # Documentación interactiva (/api/docs, /api/redoc, /api/openapi.json).
     # Deshabilitada por defecto: publica el mapa completo de la API sin
     # autenticación. Habilitar solo en entornos de desarrollo.

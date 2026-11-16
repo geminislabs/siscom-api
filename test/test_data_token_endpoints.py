@@ -61,9 +61,14 @@ class _FakeScopeStore:
         self.granted = {(_SCOPE, "dev", _REF): _IMEI}
         self.window = AccessWindow.always() if window is None else window
 
+        self.revoked: set[str] = set()
+
     async def resolve(self, scope_ref, kind, ref, max_cache_secs):
         internal_id = self.granted.get((scope_ref, kind, ref))
         return None if internal_id is None else (internal_id, self.window)
+
+    async def is_revoked(self, scope_ref):
+        return scope_ref in self.revoked
 
 
 @pytest.fixture
@@ -243,6 +248,9 @@ class TestDegradedStates:
             async def resolve(self, *args, **kwargs):
                 raise ScopeStoreUnavailable("Valkey no disponible")
 
+            async def is_revoked(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
         monkeypatch.setattr("app.api.deps.scope_store", _DownStore())
 
     def test_missing_public_key_is_503_not_401(
@@ -258,6 +266,28 @@ class TestDegradedStates:
     def test_valkey_outage_is_503_not_403(
         self, client: TestClient, enforced_without_valkey
     ):
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == "Authorization store unavailable"
+
+    def test_revocation_check_outage_is_503_not_401(
+        self, client: TestClient, enforced, monkeypatch
+    ):
+        """NEXUS-S2-03: si no se puede comprobar la revocación no se sirve nada,
+        pero tampoco se le dice al cliente que su token está revocado."""
+        from app.services.scope_store import ScopeStoreUnavailable
+
+        store = _FakeScopeStore()
+
+        async def down(*_):
+            raise ScopeStoreUnavailable("Valkey no disponible")
+
+        monkeypatch.setattr(store, "is_revoked", down)
+        monkeypatch.setattr("app.api.deps.scope_store", store)
+
         response = client.get(
             f"/api/v1/communications/latest?device_ids={_REF}",
             headers={"Authorization": f"Bearer {_token()}"},
@@ -292,6 +322,79 @@ class TestDegradedStates:
 
 
 @pytest.mark.unit
+class TestRevocationIsCheckedFirst:
+    """NEXUS-S2-03: la revocación se comprueba antes de resolver el alcance."""
+
+    @pytest.fixture
+    def revoked_store(self, monkeypatch, enforced):
+        store = _FakeScopeStore()
+        store.revoked.add(_SCOPE)
+        store.resolve_calls = 0
+        original = store.resolve
+
+        async def counting_resolve(*args, **kwargs):
+            store.resolve_calls += 1
+            return await original(*args, **kwargs)
+
+        store.resolve = counting_resolve
+        monkeypatch.setattr("app.api.deps.scope_store", store)
+        return store
+
+    def test_a_revoked_token_never_reaches_scope_resolution(
+        self, client: TestClient, revoked_store
+    ):
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 401
+        assert revoked_store.resolve_calls == 0
+
+    def test_a_revoked_token_is_401_even_for_refs_outside_the_scope(
+        self, client: TestClient, revoked_store
+    ):
+        """Sin oráculo: un token revocado no distingue refs propias de ajenas."""
+        own = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        foreign = client.get(
+            "/api/v1/communications/latest?device_ids=ref-ajena",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert own.status_code == foreign.status_code == 401
+        assert own.json() == foreign.json() == {"detail": "Data token revoked"}
+
+    def test_revoking_another_scope_does_not_affect_this_token(
+        self, client: TestClient, enforced, monkeypatch
+    ):
+        store = _FakeScopeStore()
+        store.revoked.add("scope-de-otro-equipo")
+        monkeypatch.setattr("app.api.deps.scope_store", store)
+
+        async def latest(session, device_ids, msg_class=None):
+            from app.models.communications import CommunicationCurrentState
+
+            return [CommunicationCurrentState(device_id=d) for d in device_ids]
+
+        monkeypatch.setattr(
+            "app.api.routes.communications.get_latest_communications", latest
+        )
+        response = client.get(
+            f"/api/v1/communications/latest?device_ids={_REF}",
+            headers={"Authorization": f"Bearer {_token()}"},
+        )
+        assert response.status_code == 200
+
+    def test_a_missing_token_is_401_without_touching_valkey(
+        self, client: TestClient, revoked_store
+    ):
+        response = client.get(f"/api/v1/communications/latest?device_ids={_REF}")
+        assert response.json()["detail"] == "Missing data token"
+        assert revoked_store.resolve_calls == 0
+
+
+@pytest.mark.unit
 class TestBroadHandlersDoNotFlattenStatusCodes:
     """Un `except Exception` amplio no debe aplanar un código deliberado.
 
@@ -310,6 +413,9 @@ class TestBroadHandlersDoNotFlattenStatusCodes:
                 from app.core.scope_window import AccessWindow
 
                 return (_REF, _IMEI, AccessWindow.always())
+
+            async def is_revoked(self, *args, **kwargs):
+                return False
 
         monkeypatch.setattr("app.api.deps.scope_store", _Store())
         monkeypatch.setattr(
@@ -767,6 +873,9 @@ class TestObservationModeTranslatesButDoesNotEnforce:
 
         class _Down:
             async def resolve(self, *args, **kwargs):
+                raise ScopeStoreUnavailable("Valkey no disponible")
+
+            async def is_revoked(self, *args, **kwargs):
                 raise ScopeStoreUnavailable("Valkey no disponible")
 
         monkeypatch.setattr("app.api.deps.scope_store", _Down())

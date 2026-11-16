@@ -76,6 +76,11 @@ cortó por versión y no se puede atribuir cada entrada a su tag sin reconstruir
 - `.editorconfig`, `.python-version`, `.gitleaks.toml`
 - GitHub pull request template and issue templates
 - `make validate`, `make run-dev`, `make scan-secrets`, `make audit-deps`, `make scan-osv`
+- Data token contract v1.4 (NEXUS-S2-03): shared units (`access: "shared"`) are telemetry-only —
+  events/alerts return `403`, alert fields are redacted, alert frames are dropped on WebSocket
+- Immediate revocation via `dt:scope:<scope_ref>:revoked` (checked uncached per request, at WS
+  handshake and every `SCOPE_REVALIDATE_SECS` on open WebSockets); see `docs/DATA_TOKEN_SHARED_UNITS.md`
+- `SCOPE_REVALIDATE_SECS` setting (default 10)
 
 ### Changed
 

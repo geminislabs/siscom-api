@@ -483,6 +483,11 @@ ws://localhost:8000/api/v1/public/share-location/stream?token=v4.local.xxx...
 |--------|-------|-------------|
 | 1008   | Policy Violation | Token inválido o expirado antes de conectar |
 | 1000   | Normal Closure | Token expiró durante la conexión |
+| 1008   | Policy Violation | Enlace revocado con la conexión abierta (evento `revoked` previo) |
+| 1013   | Try Again Later | Almacén de autorización (Valkey) inaccesible |
+
+> Con `DATA_TOKEN_ENFORCED=true`, `/stream` también se revalida periódicamente:
+> ver [DATA_TOKEN_SHARED_UNITS.md](DATA_TOKEN_SHARED_UNITS.md).
 
 ### Ejemplo JavaScript
 

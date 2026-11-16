@@ -17,7 +17,9 @@ from app.api.deps import (
     ShareStoreUnavailable,
     ShareTokenExpired,
     ShareTokenInvalid,
+    frame_is_exposed,
     frame_is_within_window,
+    redact_shared_frame,
     resolve_share_token,
     translate_ws_message,
 )
@@ -26,6 +28,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.observability.spans import open_ws_session
 from app.services.repository import get_latest_communications
+from app.services.scope_store import ScopeStoreUnavailable, scope_store
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +232,23 @@ async def _validate_share_token(websocket: WebSocket, token: str) -> ShareGrant 
         return None
 
 
-async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
+async def _share_revoked(grant: ShareGrant | None) -> bool:
+    """¿Se ha revocado el enlace con la conexión abierta?
+
+    Fail closed: si Valkey no responde, la conexión se corta igual — un enlace
+    público no debe seguir emitiendo sin poder comprobar que sigue vigente.
+    """
+    if grant is None or grant.scope_ref is None:
+        return False
+    try:
+        return await scope_store.is_revoked(grant.scope_ref)
+    except ScopeStoreUnavailable:
+        return True
+
+
+async def _send_keepalive(
+    websocket: WebSocket, expires_at: datetime, grant: ShareGrant | None = None
+) -> None:
     """
     Envía pings keep-alive de forma periódica y cierra al expirar el token.
 
@@ -255,6 +274,16 @@ async def _send_keepalive(websocket: WebSocket, expires_at: datetime) -> None:
                     )
                 with suppress(Exception):
                     await websocket.close(code=1000, reason="Token expired")
+                return
+
+            if await _share_revoked(grant):
+                logger.warning("Enlace compartido revocado con la conexión abierta")
+                with suppress(Exception):
+                    await websocket.send_json(
+                        {"event": "revoked", "data": {"message": "Link revoked"}}
+                    )
+                with suppress(Exception):
+                    await websocket.close(code=1008, reason="Link revoked")
                 return
 
             try:
@@ -325,6 +354,11 @@ async def _process_queue_messages(
             if not frame_is_within_window(event, translation):
                 logger.info("Trama descartada en enlace compartido: asignación cerrada")
                 continue
+
+            # Las alertas no salen por un enlace de una unidad compartida.
+            if not frame_is_exposed(event, translation):
+                continue
+            event = redact_shared_frame(event, translation)
 
             # Un enlace compartido es público: la trama sale con la referencia,
             # nunca con el identificador interno.
@@ -423,7 +457,9 @@ async def websocket_shared_location(
         queues = await ws_broker.subscribe(device_list, route="share")
 
         # 4. Task para keep-alive con verificación de expiración
-        keepalive_task = asyncio.create_task(_send_keepalive(websocket, expires_at))
+        keepalive_task = asyncio.create_task(
+            _send_keepalive(websocket, expires_at, grant)
+        )
 
         try:
             while True:

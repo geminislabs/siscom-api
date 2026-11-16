@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api.deps import (
     internal_ids,
     live_internal_ids,
+    raise_if_any_shared,
     raise_if_date_outside_windows,
     raise_if_no_live_access,
     require_data_token,
@@ -240,6 +241,10 @@ async def get_device_latest_communication(  # noqa: B008
     - Última comunicación del dispositivo especificado
     - Error 404 si el dispositivo no existe o no tiene comunicaciones
     """
+    # La última ALERTA es una alerta, no telemetría: una unidad compartida no
+    # la expone (NEXUS-S2-03).
+    if class_.upper() == "ALERT":
+        raise_if_any_shared(request, [device_id])
     raise_if_no_live_access(request, [device_id])
     result = await get_latest_communications(
         db, live_internal_ids(request, [device_id]), msg_class=class_

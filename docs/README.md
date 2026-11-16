@@ -12,6 +12,7 @@ Documentación técnica completa de la API REST para gestión de comunicaciones 
 | **[📈 Queries Grafana](GRAFANA_QUERIES.md)**  | Dashboards, queries de Flux, alertas y visualizaciones                                   |
 | **[🚀 Deployment](DEPLOYMENT.md)**            | Guía de despliegue en EC2 con GitHub Actions y configuración de variables                |
 | **[🔌 WebSocket Streaming](WEBSOCKET_STREAMING.md)** | Contrato WebSocket de posiciones + alertas por `device_id`                           |
+| **[🔐 Data token: unidades compartidas](DATA_TOKEN_SHARED_UNITS.md)** | Contrato v1.4: acceso solo telemetría y revocación inmediata          |
 
 ## 🎯 Guía Rápida
 

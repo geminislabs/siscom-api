@@ -28,7 +28,13 @@ Reglas que este módulo respeta a propósito:
    relaja, pero un corte se propaga como `ScopeStoreUnavailable` en vez de
    confundirse con "no autorizado": el primero es un problema de este servicio
    y el segundo de la credencial, y quien llama debe poder distinguirlos.
-4. **Solo se lee `dt:scope:*`.** El índice inverso `dt:owner:*` de admin-api
+4. **La revocación no espera a la caché.** Ante una pausa, revocación o
+   vencimiento de un permiso, admin-api deja la marca
+   `dt:scope:<scope_ref>:revoked` (con TTL ≥ vida máxima del token) además de
+   borrar los hashes. Esa marca se consulta **sin caché** en cada petición y
+   periódicamente en cada WebSocket abierto: la caché de pertenencia puede
+   tener hasta `SCOPE_CACHE_TTL_SECS` de retraso, la revocación no.
+5. **Solo se lee `dt:scope:*`.** El índice inverso `dt:owner:*` de admin-api
    queda fuera del alcance de este servicio por diseño, y su ACL de Valkey
    debe reforzarlo. Aprender de él sería aprender de clientes.
 """
@@ -112,6 +118,37 @@ class ScopeStore:
         if ttl <= 0:
             return
         self._cache[key] = (resolved, time.monotonic() + ttl)
+
+    def invalidate(self, scope_ref: str) -> None:
+        """Olvida todo lo cacheado de un alcance."""
+        for key in [k for k in self._cache if k[0] == scope_ref]:
+            self._cache.pop(key, None)
+
+    async def is_revoked(self, scope_ref: str) -> bool:
+        """¿Ha marcado admin-api este alcance como revocado?
+
+        Nunca se cachea: es justo lo que hace inmediata la revocación. Cuesta un
+        `EXISTS` por petición, el precio de no servir 30 s de más a quien acaba
+        de perder el permiso. Si está revocado se purga además la caché del
+        alcance, para que nada de lo resuelto antes siga sirviéndose.
+
+        Raises:
+            ScopeStoreUnavailable: si no se pudo consultar Valkey. Fail closed:
+                quien llama deniega igualmente.
+        """
+        client = self._connect()
+        if client is None:
+            raise ScopeStoreUnavailable("VALKEY_URL no configurada")
+
+        try:
+            revoked = bool(await client.exists(f"dt:scope:{scope_ref}:revoked"))
+        except Exception as e:
+            logger.error(f"Error comprobando la revocación en Valkey: {e}")
+            raise ScopeStoreUnavailable(str(e)) from e
+
+        if revoked:
+            self.invalidate(scope_ref)
+        return revoked
 
     async def resolve(
         self,
